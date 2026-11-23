@@ -234,6 +234,7 @@ async def auth_start():
         "scope": SCOPES,
         "state": state,
         "prompt": "login",
+        "prompt_missing_scopes": "true",
     })
     resp = RedirectResponse(f"{AUTH_URL}?{q}", status_code=303)
     resp.set_cookie("rp_state", sign(state), max_age=600, httponly=True,
