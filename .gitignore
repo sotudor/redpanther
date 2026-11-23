@@ -1,0 +1,12 @@
+# Secrete și date personale: nu le publica niciodată
+.env
+data/
+*.pem
+*.key
+tokens.json
+tesla*.sh
+
+# Fișiere temporare
+__pycache__/
+*.pyc
+.DS_Store

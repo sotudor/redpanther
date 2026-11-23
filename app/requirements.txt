@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+httpx==0.28.1
+python-multipart==0.0.20
+tzdata==2025.2
+aiohttp==3.14.1
+protobuf==7.35.1
+flatbuffers==25.12.19
+cryptography==49.0.0
+python-fleet-telemetry @ https://github.com/Teslemetry/python-fleet-telemetry/archive/7aaa30f5fd4d967405f774d8a4bf76c65cf1ba4e.tar.gz
