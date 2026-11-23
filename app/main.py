@@ -86,6 +86,12 @@ def init_db():
                 usable_level REAL, range_km REAL, charging_state TEXT, shift TEXT
             );
             CREATE INDEX IF NOT EXISTS snapshots_vin_ts ON snapshots(vin, ts);
+            CREATE TABLE IF NOT EXISTS login_failures (ip TEXT, ts REAL);
+            CREATE INDEX IF NOT EXISTS login_failures_ts ON login_failures(ts);
+            CREATE INDEX IF NOT EXISTS login_failures_ip ON login_failures(ip, ts);
+            CREATE TABLE IF NOT EXISTS login_blocks (
+                ip TEXT PRIMARY KEY, until REAL, strikes INTEGER
+            );
             """
         )
         telemetry.init_db(con)
@@ -143,16 +149,91 @@ a{{color:#a3202e}}</style></head><body><h1>{html.escape(title)}</h1>
 
 # ---------- login aplicație ----------
 
+# Protecția împotriva încercărilor repetate de parolă. Contorii stau în SQLite,
+# deci rezistă la repornirea aplicației.
+IP_MAX_FAILS = 5                # încercări greșite permise de pe o adresă...
+IP_WINDOW = 15 * 60             # ...în 15 minute
+BLOCK_BASE = 15 * 60            # prima blocare: 15 minute, apoi se dublează
+BLOCK_MAX = 24 * 3600           # cel mult 24 de ore
+STRIKES_FORGET = 24 * 3600      # după o zi fără blocări, dublarea o ia de la capăt
+GLOBAL_MAX_FAILS = 30           # încercări greșite de pe toate adresele...
+GLOBAL_WINDOW = 3600            # ...într-o oră
+
+
+def client_ip(request: Request) -> str:
+    # Aplicația e accesibilă doar prin Caddy, care pune adresa reală a clientului
+    # la finalul lui X-Forwarded-For; ce e înainte poate fi trimis de oricine.
+    xff = request.headers.get("x-forwarded-for", "")
+    last = xff.split(",")[-1].strip()
+    if last:
+        return last
+    return request.client.host if request.client else "necunoscut"
+
+
+def login_block(con, ip: str, now: float):
+    """Întoarce (până_când, global) dacă login-ul e blocat acum, altfel None."""
+    b = con.execute("SELECT until FROM login_blocks WHERE ip=?", (ip,)).fetchone()
+    if b and b["until"] > now:
+        return b["until"], False
+    n = con.execute("SELECT count(*) FROM login_failures WHERE ts>?", (now - GLOBAL_WINDOW,)).fetchone()[0]
+    if n >= GLOBAL_MAX_FAILS:
+        # Blocarea ține până când în ultima oră rămân sub 30 de încercări greșite.
+        oldest = con.execute(
+            "SELECT ts FROM login_failures WHERE ts>? ORDER BY ts LIMIT 1 OFFSET ?",
+            (now - GLOBAL_WINDOW, n - GLOBAL_MAX_FAILS),
+        ).fetchone()[0]
+        return oldest + GLOBAL_WINDOW, True
+    return None
+
+
+def record_failure(con, ip: str, now: float) -> int:
+    """Notează o parolă greșită. Întoarce câte încercări mai are adresa (0 = tocmai a fost blocată)."""
+    con.execute("DELETE FROM login_failures WHERE ts<?", (now - max(GLOBAL_WINDOW, IP_WINDOW),))
+    con.execute("INSERT INTO login_failures VALUES (?,?)", (ip, now))
+    b = con.execute("SELECT until, strikes FROM login_blocks WHERE ip=?", (ip,)).fetchone()
+    since = max(now - IP_WINDOW, b["until"] if b else 0)   # încercările de dinaintea ultimei blocări nu mai contează
+    n = con.execute("SELECT count(*) FROM login_failures WHERE ip=? AND ts>?", (ip, since)).fetchone()[0]
+    if n < IP_MAX_FAILS:
+        return IP_MAX_FAILS - n
+    strikes = (b["strikes"] if b and now - b["until"] < STRIKES_FORGET else 0) + 1
+    until = now + min(BLOCK_BASE * 2 ** (strikes - 1), BLOCK_MAX)
+    con.execute(
+        "INSERT INTO login_blocks VALUES (?,?,?) ON CONFLICT(ip) DO UPDATE SET until=excluded.until, strikes=excluded.strikes",
+        (ip, until, strikes),
+    )
+    print(f"login: adresa {ip} blocată {round((until - now) / 60)} min (blocarea nr. {strikes})", flush=True)
+    return 0
+
+
+def blocked_redirect(until: float, is_global: bool, now: float) -> RedirectResponse:
+    q = urlencode({"b": max(1, round(until - now)), **({"g": 1} if is_global else {})})
+    return RedirectResponse(f"/login?{q}", status_code=303)
+
+
 @app.get("/login")
 async def login_page():
-    return FileResponse(STATIC / "login.html")
+    return FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/login")
-async def login(password: str = Form(...)):
+async def login(request: Request, password: str = Form(...)):
+    ip, now = client_ip(request), time.time()
+    with db() as con:
+        blk = login_block(con, ip, now)
+    if blk:
+        # Cât timp e blocat, parola nici nu se mai verifică.
+        return blocked_redirect(*blk, now)
     if not hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
+        with db() as con:
+            left = record_failure(con, ip, now)
+            blk = login_block(con, ip, now)
         await asyncio.sleep(1.5)
-        return RedirectResponse("/login?e=1", status_code=303)
+        if blk:
+            return blocked_redirect(*blk, now)
+        return RedirectResponse(f"/login?e=1&r={left}", status_code=303)
+    with db() as con:
+        con.execute("DELETE FROM login_failures WHERE ip=?", (ip,))
+        con.execute("DELETE FROM login_blocks WHERE ip=?", (ip,))
     resp = RedirectResponse("/", status_code=303)
     exp = time.time() + SESSION_DAYS * 86400
     resp.set_cookie("rp_session", sign(str(exp)), max_age=SESSION_DAYS * 86400,

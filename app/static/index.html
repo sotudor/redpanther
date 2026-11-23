@@ -118,10 +118,49 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .gauge.charging .fill { background: var(--charge); }
 .gauge .limit { position: absolute; top: -5px; bottom: -5px; width: 3px; border-radius: 2px; background: var(--ink); opacity: .7; display: none; }
 .gauge-legend { display: flex; justify-content: space-between; margin-top: .55rem; color: var(--muted); font-size: .85rem; }
-.tires { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: .3rem 1rem; margin-top: .5rem; }
-.tires b { font-size: 1.15rem; }
-.tires .r { text-align: right; }
-.car-shape { grid-row: 1 / span 2; grid-column: 2; width: 36px; height: 70px; border: 2px solid var(--line); border-radius: 16px 16px 12px 12px; }
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .75rem; }
+.sub.right { text-align: right; margin-top: .2rem; }
+.chart.sm { height: 120px; margin-top: .6rem; }
+.chart-foot { display: flex; justify-content: space-between; gap: .5rem; color: var(--faint); font-size: .75rem; margin-top: .35rem; }
+.legend { display: inline-flex; align-items: center; gap: .3rem; }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-left: .4rem; }
+.legend i.up { background: var(--charge); }
+.legend i.down { background: var(--accent); }
+.chart-empty { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: .85rem; text-align: center; }
+
+/* roțile: mașina văzută de sus */
+.tire-view { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: 1fr 1fr; align-items: center; column-gap: .75rem; margin-top: .5rem; }
+.car-top { grid-column: 2; grid-row: 1 / span 2; width: 96px; height: 176px; overflow: visible; }
+.car-top .body { fill: var(--surface-2); stroke: var(--line); stroke-width: 2; }
+.car-top .glass { fill: color-mix(in srgb, var(--blue) 22%, var(--surface-2)); }
+.car-top .roof { fill: color-mix(in srgb, var(--ink) 7%, var(--surface-2)); }
+.car-top .mirror { fill: var(--line); }
+.car-top .wheel { fill: var(--faint); transition: fill .3s; }
+.car-top .wheel.ok { fill: var(--charge); }
+.car-top .wheel.warn { fill: var(--amber); }
+.car-top .wheel.alert { fill: var(--accent); }
+.tire-lbl { grid-column: 1; display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
+.tire-lbl.r { grid-column: 3; align-items: flex-start; text-align: left; }
+#tFL, #tFR { grid-row: 1; align-self: start; margin-top: 1.6rem; }
+#tRL, #tRR { grid-row: 2; align-self: end; margin-bottom: 1.6rem; }
+.tire-lbl b { font-size: 1.35rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.15; }
+.tire-lbl b small { font-size: .6em; font-weight: 500; color: var(--muted); margin-left: .15em; }
+.tire-lbl .st { font-size: .75rem; font-weight: 600; color: var(--muted); }
+.tire-lbl .st.ok { color: var(--charge); }
+.tire-lbl .st.warn { color: var(--amber); }
+.tire-lbl .st.alert { color: var(--accent); }
+
+/* sănătatea bateriei: pachetul desenat */
+.pack { display: flex; align-items: center; margin-top: .9rem; }
+.pack-body { position: relative; flex: 1; height: 34px; border: 2px solid var(--line); border-radius: 9px; padding: 3px; display: flex; gap: 0; }
+.pack-fill { height: 100%; width: 0; border-radius: 5px 0 0 5px; background: var(--charge); transition: width .8s cubic-bezier(.2,.7,.2,1); }
+.pack-fill.warn { background: var(--amber); }
+.pack-fill.alert { background: var(--accent); }
+.pack-lost { height: 100%; flex: 1; border-radius: 0 5px 5px 0; background: repeating-linear-gradient(135deg, var(--surface-2) 0 5px, transparent 5px 10px); }
+.pack-warranty { position: absolute; top: -7px; bottom: -7px; left: calc(3px + (100% - 6px) * .7); width: 2px; background: var(--ink); opacity: .55; border-radius: 1px; }
+.pack-cap { width: 6px; height: 14px; margin-left: 2px; border-radius: 0 3px 3px 0; background: var(--line); }
+.pack-legend { display: flex; justify-content: space-between; gap: .5rem; color: var(--muted); font-size: .8rem; margin-top: .5rem; }
+.health-card .spark { margin-top: .9rem; }
 .spark { height: 46px; margin-top: .5rem; }
 .spark svg { width: 100%; height: 100%; display: block; }
 
@@ -188,7 +227,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .login-needed { max-width: 26rem; margin: 3rem auto; text-align: center; }
 .leaflet-container { background: var(--surface-2) !important; font-family: inherit !important; }
 @media (prefers-color-scheme: dark) { .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); } }
-@media (prefers-reduced-motion: reduce) { .gauge .fill { transition: none; } .icon-btn.spin svg { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .gauge .fill, .pack-fill, .car-top .wheel { transition: none; } .icon-btn.spin svg { animation: none; } }
 </style>
 </head>
 <body>
@@ -235,13 +274,21 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
     <div class="section-label">Baterie</div>
     <div class="grid">
       <div class="card wide">
-        <div class="k">Sănătatea bateriei</div>
-        <div class="v"><span id="healthPct">–</span><small>%</small></div>
-        <div class="sub" id="healthSub">Se calculează după primele zile de date.</div>
-        <div class="spark" id="healthSpark"></div>
+        <div class="card-head">
+          <div><div class="k">Temperatură baterie</div><div class="v"><span id="batTemp">–</span><small>°C</small></div></div>
+          <div class="sub right" id="batTempSub"></div>
+        </div>
+        <div class="chart sm" id="batTempChart"></div>
+        <div class="chart-foot">Ultimele 2 ore</div>
       </div>
-      <div class="card"><div class="k">Temperatură baterie</div><div class="v"><span id="batTemp">–</span><small>°C</small></div><div class="sub" id="batTempSub"></div></div>
-      <div class="card"><div class="k">Energie rămasă</div><div class="v"><span id="energyLeft">–</span><small>kWh</small></div><div class="sub" id="energySub"></div></div>
+      <div class="card wide">
+        <div class="card-head">
+          <div><div class="k">Energie rămasă</div><div class="v"><span id="energyLeft">–</span><small>kWh</small></div></div>
+          <div class="sub right" id="energySub"></div>
+        </div>
+        <div class="chart sm" id="energyChart"></div>
+        <div class="chart-foot"><span>Ultimele 6 ore</span><span class="legend"><i class="up"></i>crește<i class="down"></i>scade</span></div>
+      </div>
       <div class="card"><div class="k">Diferență celule</div><div class="v"><span id="cellDiff">–</span><small>mV</small></div><div class="sub" id="cellSub"></div></div>
       <div class="card"><div class="k">Consumat în viață</div><div class="v"><span id="lifetime">–</span><small>kWh</small></div></div>
     </div>
@@ -252,16 +299,43 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
       <div class="card"><div class="k">Kilometraj</div><div class="v"><span id="odo">–</span><small>km</small></div></div>
       <div class="card"><div class="k">Software</div><div class="v" style="font-size:1.1rem" id="software">–</div></div>
       <div class="card wide">
-        <div class="k">Presiune în roți</div>
-        <div class="tires">
-          <div><div class="k">Față stânga</div><b id="tFL">–</b></div><span class="car-shape" aria-hidden="true"></span><div class="r"><div class="k">Față dreapta</div><b id="tFR">–</b></div>
-          <div><div class="k">Spate stânga</div><b id="tRL">–</b></div><div class="r"><div class="k">Spate dreapta</div><b id="tRR">–</b></div>
+        <div class="card-head"><div class="k">Presiune în roți</div><div class="sub right" id="tireNote"></div></div>
+        <div class="tire-view">
+          <div class="tire-lbl" id="tFL"></div>
+          <svg class="car-top" viewBox="0 0 120 220" aria-hidden="true">
+            <rect class="wheel" id="wFL" x="3" y="36" width="17" height="38" rx="6"/>
+            <rect class="wheel" id="wFR" x="100" y="36" width="17" height="38" rx="6"/>
+            <rect class="wheel" id="wRL" x="3" y="148" width="17" height="38" rx="6"/>
+            <rect class="wheel" id="wRR" x="100" y="148" width="17" height="38" rx="6"/>
+            <path class="body" d="M60 6c-22 0-38 6-40 22-2 14-3 40-3 82s1 68 3 82c2 14 18 22 40 22s38-8 40-22c2-14 3-40 3-82s-1-68-3-82C98 12 82 6 60 6z"/>
+            <path class="glass" d="M30 66c18-8 42-8 60 0l-5 26c-16-5-34-5-50 0z"/>
+            <path class="roof" d="M35 96c16-4 34-4 50 0v48c-16 3-34 3-50 0z"/>
+            <path class="glass" d="M35 150c16 3 34 3 50 0l4 20c-18 6-40 6-58 0z"/>
+            <path class="mirror" d="M17 84l-8 4v6l9-2zM103 84l8 4v6l-9-2z"/>
+          </svg>
+          <div class="tire-lbl r" id="tFR"></div>
+          <div class="tire-lbl" id="tRL"></div>
+          <div class="tire-lbl r" id="tRR"></div>
         </div>
       </div>
       <div class="card wide">
         <div class="k">Motoare</div>
         <div class="rows" id="motorRows" style="margin-top:.4rem"></div>
       </div>
+    </div>
+    <div class="section-label">Sănătatea bateriei</div>
+    <div class="card health-card">
+      <div class="card-head">
+        <div><div class="k">Capacitate păstrată</div><div class="v"><span id="healthPct">–</span><small>%</small></div></div>
+        <div class="sub right" id="healthSub">Se calculează după primele zile de date.</div>
+      </div>
+      <div class="pack" id="healthPack" aria-hidden="true">
+        <div class="pack-body"><div class="pack-fill" id="healthFill"></div><div class="pack-lost" id="healthLost"></div><div class="pack-warranty" title="Pragul din garanția Tesla"></div></div>
+        <div class="pack-cap"></div>
+      </div>
+      <div class="pack-legend"><span id="healthKwh"></span><span>Garanție: minim 70%</span></div>
+      <div class="spark" id="healthSpark"></div>
+      <div class="chart-foot" id="healthTrend"></div>
     </div>
   </section>
 
@@ -438,15 +512,16 @@ function barChart(box, labels, values, color, digits = 0) {
   });
 }
 
-function lineChart(box, points, color, unit, digits = 0) {
+/* Cadrul comun al graficelor în timp: axe, grilă, etichete. Întoarce null dacă nu sunt date. */
+function timeFrame(box, points, unit, digits, minSpan = 1) {
   box.replaceChildren();
-  if (!points || points.length < 2) { box.innerHTML = '<div class="empty-note" style="padding:3rem 0">Nu sunt încă date suficiente.</div>'; return; }
+  if (!points || points.length < 2) { box.innerHTML = '<div class="chart-empty">Nu sunt încă date suficiente.</div>'; return null; }
   const W = box.clientWidth || 320, H = box.clientHeight || 170, L = 34, B = 22, T = 10;
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}` }, box);
   const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
-  if (y1 - y0 < 1) { y0 -= 1; y1 += 1; }
+  if (y1 - y0 < minSpan) { const c = (y0 + y1) / 2; y0 = c - minSpan / 2; y1 = c + minSpan / 2; }
   const pad = (y1 - y0) * .1; y0 -= pad; y1 += pad;
   const X = (x) => L + (W - L - 4) * (x - x0) / Math.max(1, x1 - x0);
   const Y = (y) => T + (H - T - B) * (1 - (y - y0) / (y1 - y0));
@@ -455,12 +530,39 @@ function lineChart(box, points, color, unit, digits = 0) {
     el("line", { x1: L, x2: W, y1: y, y2: y, stroke: "var(--line)", "stroke-width": 1 }, svg);
     el("text", { x: L - 6, y: y + 3, "text-anchor": "end" }, svg).textContent = fmt(v, digits);
   }
-  const d = points.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("");
-  el("path", { d: `${d}L${X(x1).toFixed(1)},${H - B}L${X(x0).toFixed(1)},${H - B}Z`, fill: color, opacity: .12 }, svg);
-  el("path", { d, fill: "none", stroke: color, "stroke-width": 2.2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
   el("text", { x: L, y: H - 6 }, svg).textContent = hm(x0);
   el("text", { x: W - 2, y: H - 6, "text-anchor": "end" }, svg).textContent = hm(x1);
   el("text", { x: W - 2, y: T - 1, "text-anchor": "end" }, svg).textContent = unit;
+  return { svg, X, Y, base: H - B };
+}
+const pathOf = (pts, X, Y) => pts.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("");
+
+function lineChart(box, points, color, unit, digits = 0, minSpan = 2) {
+  const f = timeFrame(box, points, unit, digits, minSpan);
+  if (!f) return;
+  const d = pathOf(points, f.X, f.Y);
+  el("path", { d: `${d}L${f.X(points[points.length - 1][0]).toFixed(1)},${f.base}L${f.X(points[0][0]).toFixed(1)},${f.base}Z`, fill: color, opacity: .12 }, f.svg);
+  el("path", { d, fill: "none", stroke: color, "stroke-width": 2.2, "stroke-linejoin": "round", "stroke-linecap": "round" }, f.svg);
+}
+
+/* Grafic colorat după direcție: verde când valoarea crește, roșu când scade, gri când stă pe loc. */
+function trendChart(box, points, unit, digits = 0, minSpan = 1, eps = 0) {
+  const f = timeFrame(box, points, unit, digits, minSpan);
+  if (!f) return;
+  const dirOf = (a, b) => b[1] - a[1] > eps ? "up" : a[1] - b[1] > eps ? "down" : "flat";
+  const COLOR = { up: "var(--charge)", down: "var(--accent)", flat: "var(--faint)" };
+  const runs = [];
+  for (let i = 1; i < points.length; i++) {
+    const dir = dirOf(points[i - 1], points[i]), last = runs[runs.length - 1];
+    if (last && last.dir === dir) last.pts.push(points[i]);
+    else runs.push({ dir, pts: [points[i - 1], points[i]] });
+  }
+  for (const r of runs) {
+    const d = pathOf(r.pts, f.X, f.Y);
+    const xa = f.X(r.pts[0][0]).toFixed(1), xb = f.X(r.pts[r.pts.length - 1][0]).toFixed(1);
+    if (r.dir !== "flat") el("path", { d: `${d}L${xb},${f.base}L${xa},${f.base}Z`, fill: COLOR[r.dir], opacity: .12 }, f.svg);
+    el("path", { d, fill: "none", stroke: COLOR[r.dir], "stroke-width": 2.2, "stroke-linejoin": "round", "stroke-linecap": "round" }, f.svg);
+  }
 }
 
 function spark(box, values, color) {
@@ -584,16 +686,22 @@ async function loadCar() {
   $("todayKm").textContent = fmt(j.today.km, 1);
   $("todayCons").textContent = fmt(j.today.kwh_100km, 1);
 
-  const h = j.health;
-  $("healthPct").textContent = fmt(h.health_pct, 1);
-  $("healthSub").textContent = h.capacity_kwh ? `Capacitate estimată ${fmt(h.capacity_kwh, 1)} kWh din ${fmt(h.nominal_kwh, 1)} kWh` : "Se calculează după primele date de la mașină.";
-  spark($("healthSpark"), h.history.map((x) => x[1]), "var(--charge)");
+  renderHealth(j.health);
 
+  const hist = L.history || {};
   const tmax = lv(L, "ModuleTempMax"), tmin = lv(L, "ModuleTempMin");
   $("batTemp").textContent = fmt(tmax, 1);
-  $("batTempSub").textContent = (tmin !== null ? `Minim ${fmt(tmin, 1)} °C` : "") + (lv(L, "BatteryHeaterOn") ? " · se încălzește" : "");
+  $("batTempSub").innerHTML = [tmin !== null ? `Minim ${fmt(tmin, 1)} °C` : "", lv(L, "BatteryHeaterOn") ? "Se încălzește" : ""].filter(Boolean).join("<br>");
+  lineChart($("batTempChart"), hist.ModuleTempMax, "var(--amber)", "°C", 1, 2);
+
+  const eh = hist.EnergyRemaining || [];
   $("energyLeft").textContent = fmt(lv(L, "EnergyRemaining"), 1);
-  $("energySub").textContent = lv(L, "PackVoltage") ? `${fmt(lv(L, "PackVoltage"))} V` : "";
+  const delta = eh.length > 1 ? eh[eh.length - 1][1] - eh[0][1] : null;
+  $("energySub").innerHTML = [
+    delta !== null && Math.abs(delta) >= 0.05 ? `<span style="color:${delta > 0 ? "var(--charge)" : "var(--accent)"};font-weight:600">${delta > 0 ? "+" : "−"}${fmt(Math.abs(delta), 1)} kWh</span> în 6 h` : "",
+    lv(L, "PackVoltage") ? `${fmt(lv(L, "PackVoltage"))} V` : ""
+  ].filter(Boolean).join("<br>");
+  trendChart($("energyChart"), eh, "kWh", 1, 2, 0.02);
   const bmax = lv(L, "BrickVoltageMax"), bmin = lv(L, "BrickVoltageMin");
   const diff = bmax !== null && bmin !== null ? (bmax - bmin) * 1000 : null;
   $("cellDiff").textContent = fmt(diff);
@@ -604,11 +712,49 @@ async function loadCar() {
   $("inTemp").textContent = fmt(lv(L, "InsideTemp") ?? P.inside_temp, 1);
   $("odo").textContent = fmt(lv(L, "Odometer") !== null ? lv(L, "Odometer") * MI : P.odometer_km);
   $("software").textContent = P.software ? P.software.split(" ")[0] : "–";
-  const t = (k, pk) => fmt(lv(L, k) ?? (P.tpms ? P.tpms[pk] : null), 1);
-  $("tFL").textContent = t("TpmsPressureFl", "fl") + " bar"; $("tFR").textContent = t("TpmsPressureFr", "fr") + " bar";
-  $("tRL").textContent = t("TpmsPressureRl", "rl") + " bar"; $("tRR").textContent = t("TpmsPressureRr", "rr") + " bar";
+  renderTires(L, P);
   $("motorRows").innerHTML = [["Stator față", "DiStatorTempF"], ["Stator spate", "DiStatorTempR"], ["Invertor față", "DiHeatsinkTF"], ["Invertor spate", "DiHeatsinkTR"]]
     .map(([a, k]) => `<div class="row"><span>${a}</span><span>${fmt(lv(L, k))} °C</span></div>`).join("");
+}
+
+/* Sănătatea bateriei: pachetul desenat (partea pierdută hașurată, reper la 70%) și evoluția în timp. */
+function renderHealth(h) {
+  const pct = h.health_pct, level = pct === null || pct === undefined ? "" : pct >= 90 ? "" : pct >= 80 ? "warn" : "alert";
+  $("healthPct").textContent = fmt(pct, 1);
+  $("healthFill").style.width = (pct ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+  $("healthFill").className = "pack-fill " + level;
+  $("healthSub").textContent = h.capacity_kwh ? `${fmt(h.capacity_kwh, 1)} din ${fmt(h.nominal_kwh, 1)} kWh` : "Se calculează după primele date de la mașină.";
+  const lost = h.capacity_kwh ? h.nominal_kwh - h.capacity_kwh : null;
+  $("healthKwh").textContent = lost !== null ? (lost > 0.05 ? `Pierdut: ${fmt(lost, 1)} kWh` : "Fără pierderi măsurabile") : "";
+  const hs = h.history || [];
+  spark($("healthSpark"), hs.map((x) => x[1]), level === "alert" ? "var(--accent)" : level === "warn" ? "var(--amber)" : "var(--charge)");
+  if (hs.length > 1) {
+    const first = new Date(hs[0][0] + "T12:00").toLocaleDateString("ro-RO", { day: "numeric", month: "short", year: "numeric" });
+    const ch = hs[hs.length - 1][1] - hs[0][1];
+    $("healthTrend").textContent = `Capacitate estimată din ${first}: ${Math.abs(ch) < 0.05 ? "stabilă" : (ch > 0 ? "+" : "−") + fmt(Math.abs(ch), 1) + " kWh"}`;
+  } else $("healthTrend").textContent = "";
+}
+
+/* Presiunea în roți: mașina văzută de sus, fiecare roată colorată după presiune. */
+const TIRE_TARGET = 2.9;   // bar, presiunea recomandată pe eticheta din ușă (Model 3 / Model Y)
+function tireStatus(bar) {
+  if (bar === null || bar === undefined) return ["", "Fără date"];
+  if (bar < TIRE_TARGET - 0.5) return ["alert", "Foarte scăzută"];
+  if (bar < TIRE_TARGET - 0.2) return ["warn", "Scăzută"];
+  if (bar > TIRE_TARGET + 0.4) return ["warn", "Ridicată"];
+  return ["ok", "Normală"];
+}
+function renderTires(L, P) {
+  const names = { FL: "Față stânga", FR: "Față dreapta", RL: "Spate stânga", RR: "Spate dreapta" };
+  let worst = 0;
+  for (const pos of ["FL", "FR", "RL", "RR"]) {
+    const bar = lv(L, "TpmsPressure" + pos.charAt(0) + pos.charAt(1).toLowerCase()) ?? (P.tpms ? P.tpms[pos.toLowerCase()] : null);
+    const [cls, text] = tireStatus(bar);
+    worst = Math.max(worst, { ok: 0, "": 0, warn: 1, alert: 2 }[cls]);
+    $("w" + pos).setAttribute("class", "wheel " + cls);
+    $("t" + pos).innerHTML = `<span class="k">${names[pos]}</span><b>${fmt(bar, 1)}<small>bar</small></b><span class="st ${cls}">${text}</span>`;
+  }
+  $("tireNote").textContent = worst ? `Recomandat ${fmt(TIRE_TARGET, 1)} bar la rece` : `Recomandat ${fmt(TIRE_TARGET, 1)} bar`;
 }
 
 /* ---------- DRIVES ---------- */

@@ -23,18 +23,59 @@ button { margin-top:1.5rem; width:100%; font:inherit; font-weight:600; color:#ff
 @media (prefers-color-scheme: dark) { button { color:#1B2028; } }
 button:focus-visible { outline:3px solid var(--ink); outline-offset:3px; }
 .err { color:var(--red); margin-top:1rem; }
+.blocked { border:2px solid var(--red); border-radius:6px; padding:.8rem 1rem; margin:0 0 1.5rem; line-height:1.4; }
+.blocked strong { display:block; color:var(--red); margin-bottom:.25rem; }
+button:disabled { opacity:.45; cursor:not-allowed; }
 </style>
 </head>
 <body>
 <main>
   <h1>RedPanther</h1>
+  <div class="blocked" id="blocked" role="alert" hidden>
+    <strong id="blockedTitle">Prea multe încercări greșite</strong>
+    <span id="blockedText"></span>
+  </div>
   <form method="post" action="/login">
     <label for="password">Parola aplicației</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-    <button type="submit">Intră</button>
-    <p class="err" id="err" hidden>Parola nu e corectă. Încearcă din nou.</p>
+    <button type="submit" id="submit">Intră</button>
+    <p class="err" id="err" role="alert" hidden></p>
   </form>
 </main>
-<script>if (location.search.includes("e=1")) document.getElementById("err").hidden = false;</script>
+<script>
+(function () {
+  const q = new URLSearchParams(location.search), $ = (id) => document.getElementById(id);
+  const secs = parseInt(q.get("b") || "0", 10);
+  if (q.get("e") === "1") {
+    const left = parseInt(q.get("r") || "", 10);
+    $("err").textContent = "Parola nu e corectă." + (left === 1 ? " Mai ai o singură încercare, apoi accesul se blochează temporar."
+      : left > 1 ? ` Mai ai ${left} încercări înainte de blocarea temporară.` : " Încearcă din nou.");
+    $("err").hidden = false;
+  }
+  if (secs > 0) {
+    const until = Date.now() + secs * 1000;
+    const span = (s) => {
+      if (s >= 3600) { const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return `${h} h${m ? " " + m + " min" : ""}`; }
+      if (s >= 60) return `${Math.ceil(s / 60)} min`;
+      return `${s} s`;
+    };
+    const at = new Date(until).toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" });
+    $("blockedTitle").textContent = q.get("g") ? "Autentificarea e oprită temporar" : "Prea multe încercări greșite";
+    const why = q.get("g") ? "Au fost prea multe parole greșite în ultima oră, de pe mai multe adrese, așa că login-ul e oprit pentru toată lumea."
+      : "Accesul de pe adresa ta e blocat temporar.";
+    $("blocked").hidden = false; $("submit").disabled = true; $("password").disabled = true;
+    const tick = () => {
+      const s = Math.max(0, Math.round((until - Date.now()) / 1000));
+      if (s === 0) {
+        $("blocked").hidden = true; $("submit").disabled = false; $("password").disabled = false;
+        history.replaceState(null, "", "/login"); $("password").focus(); return;
+      }
+      $("blockedText").textContent = `${why} Poți încerca din nou peste ${span(s)} (la ${at}).`;
+      setTimeout(tick, s > 120 ? 30000 : 1000);
+    };
+    tick();
+  }
+})();
+</script>
 </body>
 </html>

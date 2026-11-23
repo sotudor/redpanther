@@ -272,15 +272,35 @@ def live(db, vin: str) -> dict:
     with db() as con:
         rows = con.execute("SELECT field, value, ts FROM telemetry_latest WHERE vin=?", (vin,)).fetchall()
         conn = con.execute("SELECT connected, ts FROM telemetry_conn WHERE vin=?", (vin,)).fetchone()
-        since = time.time() - 86400
-        temps = con.execute(
-            "SELECT ts, value FROM telemetry_log WHERE vin=? AND field='ModuleTempMax' AND ts>? ORDER BY ts",
-            (vin, since),
-        ).fetchall()
+        hist = {f: history(con, vin, f, h) for f, h in HISTORY_HOURS.items()}
     values = {r["field"]: {"value": json.loads(r["value"]), "ts": r["ts"]} for r in rows}
     return {
         "connected": bool(conn["connected"]) if conn else False,
         "last_seen": conn["ts"] if conn else None,
         "values": values,
-        "temp_24h": [[t["ts"], t["value"]] for t in temps],
+        "history": hist,
     }
+
+
+# Câte ore din urmă arată graficele din tab-ul Car.
+HISTORY_HOURS = {"ModuleTempMax": 2, "EnergyRemaining": 6}
+
+
+def history(con, vin: str, field: str, hours: float) -> list:
+    """Evoluția unui semnal în ultimele ore. Mașina trimite valoarea doar când se schimbă,
+    așa că seria începe cu ultima valoare de dinaintea intervalului și se termină acum
+    cu ultima valoare cunoscută."""
+    now = time.time()
+    since = now - hours * 3600
+    prev = con.execute(
+        "SELECT value FROM telemetry_log WHERE vin=? AND field=? AND ts<=? ORDER BY ts DESC LIMIT 1",
+        (vin, field, since),
+    ).fetchone()
+    pts = [[since, prev[0]]] if prev else []
+    pts += [[r[0], r[1]] for r in con.execute(
+        "SELECT ts, value FROM telemetry_log WHERE vin=? AND field=? AND ts>? ORDER BY ts",
+        (vin, field, since),
+    )]
+    if pts:
+        pts.append([now, pts[-1][1]])
+    return pts

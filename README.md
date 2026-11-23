@@ -8,7 +8,7 @@ O aplicație personală, găzduită de tine, pentru mașinile Tesla: drumuri cu 
 
 ## Ce face
 
-- **Car**: bateria și autonomia, limita de încărcare, sănătatea estimată a bateriei (din energia reală în kWh), temperatura bateriei, echilibrul celulelor, presiunea în roți, temperaturile motoarelor și poza mașinii, încărcată de tine.
+- **Car**: bateria și autonomia, limita de încărcare, temperatura bateriei în ultimele 2 ore, energia rămasă în ultimele 6 ore (verde când crește, roșu când scade), echilibrul celulelor, presiunea în fiecare roată, temperaturile motoarelor, sănătatea estimată a bateriei (din energia reală în kWh, comparată cu pragul de 70% din garanție) și poza mașinii, încărcată de tine.
 - **Drives**: fiecare drum, cu traseul pe hartă, distanța, durata, energia, consumul, autonomia folosită și viteza.
 - **Charging**: fiecare încărcare, cu graficele puterii, temperaturii bateriei și nivelului bateriei, eficiența încărcării și costul (acasă 0, Supercharger din facturile Tesla, alte rețele introduse manual).
 - **Parked**: energia pierdută cât mașina stă parcată, inclusiv cu Sentry.
@@ -128,6 +128,7 @@ Pe Android, din meniul Chrome: **Instalează aplicația**.
 
 - Nu publica niciodată `.env`, folderul `data/` sau cheia privată. Fișierul `.gitignore` le exclude.
 - Aplicația e protejată cu parolă. Tokenurile Tesla rămân doar pe serverul tău.
+- Login-ul e protejat împotriva ghicirii parolei: după 5 parole greșite în 15 minute de pe aceeași adresă IP, adresa e blocată 15 minute, iar fiecare nouă blocare dublează durata (până la 24 de ore). Peste 30 de parole greșite într-o oră, de pe toate adresele la un loc, opresc login-ul pentru toată lumea până scade numărul. Contorii stau în baza de date, deci rezistă la repornire, iar un login reușit șterge contorul adresei. Adresa clientului e luată din `X-Forwarded-For`, pus de Caddy, așa că aplicația nu trebuie expusă direct, ci doar prin Caddy.
 - Dacă un secret a ajuns vreodată public, regenerează-l.
 
 ## Licență
