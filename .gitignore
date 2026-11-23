@@ -10,3 +10,4 @@ tesla*.sh
 __pycache__/
 *.pyc
 .DS_Store
+CLAUDE.local.md
