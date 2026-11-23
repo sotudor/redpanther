@@ -768,6 +768,19 @@ async def index():
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+VENDOR = (STATIC / "vendor").resolve()
+VENDOR_TYPES = {".js": "text/javascript", ".css": "text/css", ".png": "image/png"}
+
+
+@app.get("/vendor/{path:path}")
+async def vendor_file(path: str):
+    f = (VENDOR / path).resolve()
+    if f.is_relative_to(VENDOR) and f.is_file() and f.suffix in VENDOR_TYPES:
+        return FileResponse(f, media_type=VENDOR_TYPES[f.suffix],
+                            headers={"Cache-Control": "public, max-age=604800"})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 @app.get("/{name}")
 async def static_file(name: str):
     if name in STATIC_FILES and name != "login.html":

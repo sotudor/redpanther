@@ -187,6 +187,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 [hidden] { display: none !important; }
 .login-needed { max-width: 26rem; margin: 3rem auto; text-align: center; }
 .leaflet-container { background: var(--surface-2) !important; font-family: inherit !important; }
+@media (prefers-color-scheme: dark) { .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); } }
 @media (prefers-reduced-motion: reduce) { .gauge .fill { transition: none; } .icon-btn.spin svg { animation: none; } }
 </style>
 </head>
@@ -630,8 +631,10 @@ let leafletReady = null;
 function leaflet() {
   if (leafletReady) return leafletReady;
   leafletReady = new Promise((res, rej) => {
-    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"; document.head.append(css);
-    const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"; s.onload = res; s.onerror = rej; document.head.append(s);
+    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "/vendor/leaflet/leaflet.css"; document.head.append(css);
+    const s = document.createElement("script"); s.src = "/vendor/leaflet/leaflet.js"; s.onload = res;
+    s.onerror = () => { leafletReady = null; rej(new Error("Leaflet nu s-a putut încărca de pe server.")); };
+    document.head.append(s);
   });
   return leafletReady;
 }
@@ -642,9 +645,8 @@ async function drawMap(boxId, path, start, end) {
   await leaflet();
   if (map) { map.remove(); map = null; }
   box.innerHTML = "";
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
   map = L.map(box, { zoomControl: false, attributionControl: true });
-  L.tileLayer(`https://{s}.basemaps.cartocdn.com/${dark ? "dark_all" : "light_all"}/{z}/{x}/{y}{r}.png`, { maxZoom: 19, attribution: "© OpenStreetMap © CARTO" }).addTo(map);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
   const pts = path.length ? path : [start, end].filter((p) => p && p[0]);
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--blue").trim() || "#2F6FEB";
   const line = L.polyline(pts, { color: accent, weight: 5, opacity: .95 }).addTo(map);
@@ -657,7 +659,11 @@ async function loadDrive(id) {
   const d = await api(`/api/drive/${id}`);
   $("dTitle").textContent = d.from || d.to ? `${d.from || "?"} → ${d.to || "?"}` : "Drum";
   $("dSub").textContent = `${dayName(d.start_ts)}, ${hm(d.start_ts)}${d.end_ts ? " – " + hm(d.end_ts) : " (în curs)"}`;
-  await drawMap("dMap", d.path, d.start, d.end).catch(() => { $("dMap").innerHTML = '<div class="empty-note">Harta nu s-a putut încărca.</div>'; });
+  await drawMap("dMap", d.path, d.start, d.end).catch((err) => {
+    const note = document.createElement("div"); note.className = "empty-note";
+    note.textContent = `Harta nu s-a putut încărca: ${err && err.message ? err.message : err}`;
+    $("dMap").replaceChildren(note);
+  });
   const cards = [
     ["Distanță", fmt(d.km, 1), "km"], ["Durată", dur(d.duration_min), ""],
     ["Energie", fmt(d.kwh, 1), "kWh"], ["Consum", fmt(d.kwh_100km, 1), "kWh/100km"],

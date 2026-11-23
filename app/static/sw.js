@@ -1,4 +1,4 @@
-const CACHE = "rp-v2";
+const CACHE = "rp-v3";
 const SHELL = ["/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -24,6 +24,6 @@ self.addEventListener("fetch", (e) => {
         }
         return r;
       })
-      .catch(() => caches.match(e.request))
+      .catch(() => caches.match(e.request).then((r) => r || Response.error()))
   );
 });
