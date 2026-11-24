@@ -26,6 +26,10 @@ button:focus-visible { outline:3px solid var(--ink); outline-offset:3px; }
 .blocked { border:2px solid var(--red); border-radius:6px; padding:.8rem 1rem; margin:0 0 1.5rem; line-height:1.4; }
 .blocked strong { display:block; color:var(--red); margin-bottom:.25rem; }
 button:disabled { opacity:.45; cursor:not-allowed; }
+.info { color:var(--muted); margin:0 0 1.5rem; line-height:1.4; }
+#code { font-size:1.6rem; letter-spacing:.25em; }
+button.link { width:auto; margin-top:1rem; padding:.3rem 0; background:none; color:var(--muted); font-weight:400; text-decoration:underline; }
+@media (prefers-color-scheme: dark) { button.link { color:var(--muted); } }
 </style>
 </head>
 <body>
@@ -35,20 +39,46 @@ button:disabled { opacity:.45; cursor:not-allowed; }
     <strong id="blockedTitle">Prea multe încercări greșite</strong>
     <span id="blockedText"></span>
   </div>
-  <form method="post" action="/login">
+  <p class="info" id="info" role="status" hidden></p>
+  <form method="post" action="/login" id="pwForm">
     <label for="password">Parola aplicației</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
     <button type="submit" id="submit">Intră</button>
-    <p class="err" id="err" role="alert" hidden></p>
   </form>
+  <form method="post" action="/login/code" id="codeForm" hidden>
+    <label for="code" id="codeLabel">Codul din Google Authenticator</label>
+    <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+    <button type="submit" id="codeSubmit">Verifică</button>
+    <button type="button" class="link" id="useRecovery">Nu ai telefonul? Folosește un cod de rezervă</button>
+  </form>
+  <p class="err" id="err" role="alert" hidden></p>
 </main>
 <script>
 (function () {
   const q = new URLSearchParams(location.search), $ = (id) => document.getElementById(id);
   const secs = parseInt(q.get("b") || "0", 10);
+  const codeStep = q.get("step") === "code" && !secs;
+  if (codeStep) {
+    $("pwForm").hidden = true; $("codeForm").hidden = false;
+    $("info").textContent = "Parola e corectă. Deschide Google Authenticator și introdu codul de 6 cifre pentru RedPanther.";
+    $("info").hidden = false;
+    $("code").focus();
+    $("useRecovery").onclick = () => {
+      const c = $("code");
+      c.value = ""; c.removeAttribute("pattern"); c.setAttribute("inputmode", "text"); c.maxLength = 11;
+      c.setAttribute("autocomplete", "off"); c.setAttribute("autocapitalize", "none");
+      $("codeLabel").textContent = "Cod de rezervă (ex. abcde-fgh23)";
+      $("info").textContent = "Fiecare cod de rezervă merge o singură dată. După ce intri, generează coduri noi din Setări.";
+      $("useRecovery").hidden = true; c.focus();
+    };
+  }
+  if (q.get("x") === "1") {
+    $("info").textContent = "Au trecut mai mult de 5 minute de la parolă. Introdu parola din nou.";
+    $("info").hidden = false;
+  }
   if (q.get("e") === "1") {
     const left = parseInt(q.get("r") || "", 10);
-    $("err").textContent = "Parola nu e corectă." + (left === 1 ? " Mai ai o singură încercare, apoi accesul se blochează temporar."
+    $("err").textContent = (codeStep ? "Codul nu e corect." : "Parola nu e corectă.") + (left === 1 ? " Mai ai o singură încercare, apoi accesul se blochează temporar."
       : left > 1 ? ` Mai ai ${left} încercări înainte de blocarea temporară.` : " Încearcă din nou.");
     $("err").hidden = false;
   }
@@ -61,7 +91,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
     };
     const at = new Date(until).toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" });
     $("blockedTitle").textContent = q.get("g") ? "Autentificarea e oprită temporar" : "Prea multe încercări greșite";
-    const why = q.get("g") ? "Au fost prea multe parole greșite în ultima oră, de pe mai multe adrese, așa că login-ul e oprit pentru toată lumea."
+    const why = q.get("g") ? "Au fost prea multe parole sau coduri greșite în ultima oră, de pe mai multe adrese, așa că login-ul e oprit pentru toată lumea."
       : "Accesul de pe adresa ta e blocat temporar.";
     $("blocked").hidden = false; $("submit").disabled = true; $("password").disabled = true;
     const tick = () => {

@@ -128,6 +128,17 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .legend i.down { background: var(--accent); }
 .chart-empty { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: .85rem; text-align: center; }
 
+/* autentificarea în doi pași */
+.steps { margin: .6rem 0 0; padding-left: 1.2rem; color: var(--muted); font-size: .88rem; }
+.steps li { margin: .3rem 0; }
+.qr { width: 200px; height: 200px; margin: 1rem auto .5rem; padding: 10px; background: #fff; border-radius: 14px; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.secret { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; justify-content: center; margin: .4rem 0 .2rem; }
+.secret code { font-size: .85rem; letter-spacing: .06em; word-break: break-all; background: var(--surface-2); padding: .3rem .5rem; border-radius: 8px; }
+.btn.small { padding: .4rem .7rem; font-size: .85rem; }
+.codes { list-style: none; padding: 0; margin: .8rem 0 0; display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
+.codes li { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .95rem; text-align: center; background: var(--surface-2); border-radius: 8px; padding: .45rem .3rem; }
+
 /* roțile: mașina văzută de sus */
 .tire-view { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: 1fr 1fr; align-items: center; column-gap: .75rem; margin-top: .5rem; }
 .car-top { grid-column: 2; grid-row: 1 / span 2; width: 96px; height: 176px; overflow: visible; }
@@ -427,6 +438,40 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
       <div class="k">Contul Tesla</div>
       <p class="note">Pentru hărțile drumurilor, contul trebuie conectat cu permisiunea de locație. Reconectează-l, apoi activează din nou telemetria.</p>
       <div class="inline-form"><a class="btn secondary" href="/auth/tesla" style="text-decoration:none">Reconectează / adaugă cont</a><a class="btn secondary" href="/logout" style="text-decoration:none">Ieși</a></div>
+    </div>
+    <div class="card" style="margin-top:.75rem" id="tfaCard">
+      <div class="card-head"><div class="k">Autentificare în doi pași</div><span class="chip" id="tfaChip">–</span></div>
+      <p class="note" id="tfaNote">Pe lângă parolă, la login se cere și un cod din Google Authenticator. Se aplică întregii aplicații, nu doar acestei mașini.</p>
+
+      <div id="tfaOff" hidden>
+        <div class="inline-form"><button class="btn" id="tfaStart">Activează</button></div>
+      </div>
+
+      <div id="tfaSetup" hidden>
+        <ol class="steps">
+          <li>Deschide Google Authenticator, apasă <b>+</b> și alege <b>Scanează un cod QR</b>.</li>
+          <li>Scanează codul de mai jos. Dacă scanezi de pe același telefon, folosește în schimb cheia afișată sub cod („Introdu o cheie de configurare”).</li>
+          <li>Scrie aici codul de 6 cifre apărut în aplicație.</li>
+        </ol>
+        <div class="qr" id="tfaQr"></div>
+        <div class="secret"><span class="k">Cheie</span><code id="tfaSecret"></code><button class="btn secondary small" id="tfaCopySecret">Copiază</button></div>
+        <div class="inline-form"><input id="tfaConfirmCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456"><button class="btn" id="tfaConfirm">Confirmă</button></div>
+        <p class="note" id="tfaSetupMsg"></p>
+      </div>
+
+      <div id="tfaCodes" hidden>
+        <p class="note"><b>Salvează acum codurile de rezervă</b>, de exemplu în managerul de parole. Fiecare merge o singură dată, dacă nu ai telefonul la tine. Nu le mai poți vedea după ce închizi.</p>
+        <ul class="codes" id="tfaCodeList"></ul>
+        <div class="inline-form"><button class="btn secondary" id="tfaCopyCodes">Copiază codurile</button><button class="btn" id="tfaCodesDone">Le-am salvat</button></div>
+      </div>
+
+      <div id="tfaOn" hidden>
+        <div class="rows" id="tfaRows" style="margin-top:.4rem"></div>
+        <p class="note">Pentru coduri de rezervă noi sau pentru dezactivare, introdu un cod din aplicație.</p>
+        <div class="inline-form"><input id="tfaCode" autocomplete="one-time-code" maxlength="11" placeholder="Cod din aplicație"></div>
+        <div class="inline-form"><button class="btn secondary" id="tfaNewCodes">Coduri de rezervă noi</button><button class="btn secondary" id="tfaDisable">Dezactivează</button></div>
+        <p class="note" id="tfaMsg"></p>
+      </div>
     </div>
   </section>
 </main>
@@ -904,8 +949,89 @@ async function loadSettings() {
   $("setTitle").textContent = `Setări · ${v ? v.name : ""}`;
   const car = await api(`/api/car/${encodeURIComponent(current)}`);
   $("nominal").value = car.health.nominal_kwh || "";
-  await loadTele(false);
+  await Promise.all([loadTele(false), loadTfa()]);
 }
+
+/* Autentificarea în doi pași */
+let qrReady = null;
+function qrLib() {
+  if (qrReady) return qrReady;
+  qrReady = new Promise((res, rej) => {
+    const s = document.createElement("script"); s.src = "/vendor/qrcode/qrcode.js"; s.onload = res;
+    s.onerror = () => { qrReady = null; rej(new Error("Biblioteca pentru codul QR nu s-a încărcat.")); };
+    document.head.append(s);
+  });
+  return qrReady;
+}
+function tfaShow(part) { for (const p of ["tfaOff", "tfaSetup", "tfaCodes", "tfaOn"]) $(p).hidden = p !== part; }
+async function loadTfa() {
+  if (!$("tfaCodes").hidden || !$("tfaSetup").hidden) return;   // nu întrerupe o activare sau codurile afișate
+  const s = await api("/api/2fa");
+  $("tfaChip").className = "chip" + (s.enabled ? " ok" : "");
+  $("tfaChip").textContent = s.enabled ? "Activă" : "Inactivă";
+  if (s.enabled) {
+    $("tfaRows").innerHTML = [
+      ["Activă din", s.enabled_ts ? new Date(s.enabled_ts * 1000).toLocaleDateString("ro-RO", { day: "numeric", month: "long", year: "numeric" }) : "–"],
+      ["Coduri de rezervă rămase", `${s.recovery_left} din 10`]
+    ].map(([a, b]) => `<div class="row"><span>${a}</span><span>${esc(b)}</span></div>`).join("");
+    $("tfaMsg").textContent = s.recovery_left <= 3 ? "Ți-au rămas puține coduri de rezervă. Generează altele noi." : "";
+    $("tfaCode").value = "";
+    tfaShow("tfaOn");
+  } else tfaShow("tfaOff");
+}
+function showCodes(codes) {
+  $("tfaCodeList").innerHTML = codes.map((c) => `<li>${esc(c)}</li>`).join("");
+  $("tfaCopyCodes").onclick = () => copyText(codes.join("\n"), "Codurile au fost copiate.");
+  tfaShow("tfaCodes");
+}
+async function copyText(text, msg) {
+  try { await navigator.clipboard.writeText(text); toast(msg); } catch { toast("Nu am putut copia. Selectează textul manual."); }
+}
+$("tfaStart").onclick = async () => {
+  $("tfaStart").disabled = true;
+  try {
+    const j = await post("/api/2fa/setup");
+    if (!j.ok) { toast(j.message || "Nu am putut începe activarea."); return; }
+    await qrLib();
+    const qr = qrcode(0, "M"); qr.addData(j.uri); qr.make();
+    $("tfaQr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 8, scalable: true, alt: "Cod QR pentru Google Authenticator" });
+    $("tfaSecret").textContent = j.secret.match(/.{1,4}/g).join(" ");
+    $("tfaCopySecret").onclick = () => copyText(j.secret, "Cheia a fost copiată.");
+    $("tfaSetupMsg").textContent = `Codul QR e valabil ${j.minutes} minute.`;
+    $("tfaConfirmCode").value = "";
+    tfaShow("tfaSetup");
+    $("tfaConfirmCode").focus();
+  } catch (e) { if (e.message !== "auth") toast(e.message || "Nu am putut începe activarea."); }
+  finally { $("tfaStart").disabled = false; }
+};
+$("tfaConfirm").onclick = async () => {
+  const code = $("tfaConfirmCode").value.replace(/\s/g, "");
+  if (!/^\d{6}$/.test(code)) { $("tfaSetupMsg").textContent = "Introdu cele 6 cifre din aplicație."; return; }
+  $("tfaConfirm").disabled = true;
+  try {
+    const j = await post("/api/2fa/confirm", { code });
+    if (j.ok) { toast("Autentificarea în doi pași e activă."); showCodes(j.recovery); }
+    else if (j.expired) { toast(j.message); tfaShow("tfaOff"); }
+    else $("tfaSetupMsg").textContent = j.message || "Codul nu se potrivește.";
+  } catch (e) { if (e.message !== "auth") $("tfaSetupMsg").textContent = "Serverul nu răspunde."; }
+  finally { $("tfaConfirm").disabled = false; }
+};
+$("tfaCodesDone").onclick = () => { $("tfaCodes").hidden = true; loadTfa(); };
+async function tfaAction(path, done) {
+  const code = $("tfaCode").value.trim();
+  if (!code) { $("tfaMsg").textContent = "Introdu întâi un cod din aplicație."; return; }
+  $("tfaNewCodes").disabled = $("tfaDisable").disabled = true;
+  try {
+    const j = await post(path, { code });
+    if (j.ok) done(j); else $("tfaMsg").textContent = j.message || "Codul nu e corect.";
+  } catch (e) { if (e.message !== "auth") $("tfaMsg").textContent = "Serverul nu răspunde."; }
+  finally { $("tfaNewCodes").disabled = $("tfaDisable").disabled = false; }
+}
+$("tfaNewCodes").onclick = () => tfaAction("/api/2fa/recovery", (j) => { toast("Codurile vechi nu mai merg."); showCodes(j.recovery); });
+$("tfaDisable").onclick = () => {
+  if (!confirm("Dezactivezi autentificarea în doi pași? La login se va cere doar parola.")) return;
+  tfaAction("/api/2fa/disable", () => { toast("Autentificarea în doi pași a fost dezactivată."); loadTfa(); });
+};
 async function loadTele(check) {
   const j = await api(`/api/telemetry/${encodeURIComponent(current)}${check ? "?check=1" : ""}`);
   const rows = [["Conexiune", j.connected ? "Activă" : "Nu e conectată acum"], ["Ultimele date", j.last_seen ? ago(j.last_seen) : "niciodată"]];

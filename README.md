@@ -129,6 +129,11 @@ Pe Android, din meniul Chrome: **Instalează aplicația**.
 - Nu publica niciodată `.env`, folderul `data/` sau cheia privată. Fișierul `.gitignore` le exclude.
 - Aplicația e protejată cu parolă. Tokenurile Tesla rămân doar pe serverul tău.
 - Login-ul e protejat împotriva ghicirii parolei: după 5 parole greșite în 15 minute de pe aceeași adresă IP, adresa e blocată 15 minute, iar fiecare nouă blocare dublează durata (până la 24 de ore). Peste 30 de parole greșite într-o oră, de pe toate adresele la un loc, opresc login-ul pentru toată lumea până scade numărul. Contorii stau în baza de date, deci rezistă la repornire, iar un login reușit șterge contorul adresei. Adresa clientului e luată din `X-Forwarded-For`, pus de Caddy, așa că aplicația nu trebuie expusă direct, ci doar prin Caddy.
+- **Autentificare în doi pași (opțională):** din Setări poți cere, pe lângă parolă, un cod din Google Authenticator sau din orice aplicație TOTP. La activare primești 10 coduri de rezervă de unică folosință. Activarea sau dezactivarea închide sesiunile de pe celelalte dispozitive, iar codurile greșite intră în aceleași limite ca parolele greșite. Dacă pierzi telefonul și codurile de rezervă, dezactivezi 2FA de pe server, din folderul aplicației:
+
+  ```bash
+  docker compose exec app python reset_2fa.py
+  ```
 - Dacă un secret a ajuns vreodată public, regenerează-l.
 
 ## Licență

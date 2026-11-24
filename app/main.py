@@ -17,6 +17,7 @@ import base64
 from fastapi import FastAPI, Form, Request, UploadFile, File
 import analysis
 import telemetry
+import twofa
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 ENV = os.environ
@@ -51,7 +52,8 @@ SESSION_DAYS = 90
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {"manifest.json", "sw.js", "icon-192.png", "icon-512.png", "login.html"}
 PUBLIC_KEY_PATH = "/.well-known/appspecific/com.tesla.3p.public-key.pem"
-PUBLIC_PATHS = {PUBLIC_KEY_PATH, "/login", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png"}
+PUBLIC_PATHS = {PUBLIC_KEY_PATH, "/login", "/login/code", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png"}
+PRE_AUTH_MINUTES = 5      # cât ai la dispoziție să introduci codul 2FA după parolă
 
 
 class TeslaError(Exception):
@@ -92,10 +94,12 @@ def init_db():
             CREATE TABLE IF NOT EXISTS login_blocks (
                 ip TEXT PRIMARY KEY, until REAL, strikes INTEGER
             );
+            CREATE TABLE IF NOT EXISTS auth_state (k TEXT PRIMARY KEY, v TEXT);
             """
         )
         telemetry.init_db(con)
         analysis.init_db(con)
+        twofa.init_db(con)
 
 
 init_db()
@@ -116,10 +120,50 @@ def unsign(token: str):
     return value if hmac.compare_digest(mac, good) else None
 
 
+# „Generația” sesiunilor: la activarea sau dezactivarea 2FA crește, iar toate sesiunile
+# deschise înainte (pe alte dispozitive) nu mai sunt valabile.
+def _load_epoch() -> int:
+    with db() as con:
+        r = con.execute("SELECT v FROM auth_state WHERE k='session_epoch'").fetchone()
+    return int(r[0]) if r else 0
+
+
+SESSION_EPOCH = _load_epoch()
+
+
+def bump_session_epoch(con):
+    global SESSION_EPOCH
+    SESSION_EPOCH += 1
+    con.execute("INSERT INTO auth_state VALUES ('session_epoch', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                (str(SESSION_EPOCH),))
+
+
 def valid_session(request: Request) -> bool:
+    # Formatul cookie-ului: „expirare:generație” (sesiunile vechi, fără generație, sunt generația 0).
     v = unsign(request.cookies.get("rp_session", ""))
+    if v is None:
+        return False
+    exp, _, epoch = v.partition(":")
     try:
-        return v is not None and float(v) > time.time()
+        return float(exp) > time.time() and int(epoch or 0) == SESSION_EPOCH
+    except ValueError:
+        return False
+
+
+def set_session(resp):
+    exp = time.time() + SESSION_DAYS * 86400
+    resp.set_cookie("rp_session", sign(f"{exp}:{SESSION_EPOCH}"), max_age=SESSION_DAYS * 86400,
+                    httponly=True, secure=True, samesite="lax")
+    return resp
+
+
+def valid_pre_auth(request: Request) -> bool:
+    """Parola a fost corectă, dar codul 2FA încă nu a fost introdus."""
+    v = unsign(request.cookies.get("rp_pre", ""))
+    if not v or not v.startswith("pre:"):
+        return False
+    try:
+        return float(v[4:]) > time.time()
     except ValueError:
         return False
 
@@ -215,6 +259,26 @@ async def login_page():
     return FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-cache"})
 
 
+async def failed_attempt(ip: str, now: float, retry_url: str) -> RedirectResponse:
+    """O parolă sau un cod 2FA greșit: intră în aceleași contoare împotriva ghicirii."""
+    with db() as con:
+        left = record_failure(con, ip, now)
+        blk = login_block(con, ip, now)
+    await asyncio.sleep(1.5)
+    if blk:
+        return blocked_redirect(*blk, now)
+    return RedirectResponse(f"{retry_url}e=1&r={left}", status_code=303)
+
+
+def login_success(ip: str) -> RedirectResponse:
+    with db() as con:
+        con.execute("DELETE FROM login_failures WHERE ip=?", (ip,))
+        con.execute("DELETE FROM login_blocks WHERE ip=?", (ip,))
+    resp = set_session(RedirectResponse("/", status_code=303))
+    resp.delete_cookie("rp_pre")
+    return resp
+
+
 @app.post("/login")
 async def login(request: Request, password: str = Form(...)):
     ip, now = client_ip(request), time.time()
@@ -224,28 +288,140 @@ async def login(request: Request, password: str = Form(...)):
         # Cât timp e blocat, parola nici nu se mai verifică.
         return blocked_redirect(*blk, now)
     if not hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
-        with db() as con:
-            left = record_failure(con, ip, now)
-            blk = login_block(con, ip, now)
-        await asyncio.sleep(1.5)
-        if blk:
-            return blocked_redirect(*blk, now)
-        return RedirectResponse(f"/login?e=1&r={left}", status_code=303)
+        return await failed_attempt(ip, now, "/login?")
     with db() as con:
-        con.execute("DELETE FROM login_failures WHERE ip=?", (ip,))
-        con.execute("DELETE FROM login_blocks WHERE ip=?", (ip,))
-    resp = RedirectResponse("/", status_code=303)
-    exp = time.time() + SESSION_DAYS * 86400
-    resp.set_cookie("rp_session", sign(str(exp)), max_age=SESSION_DAYS * 86400,
-                    httponly=True, secure=True, samesite="lax")
+        need_code = twofa.enabled(con)
+    if not need_code:
+        return login_success(ip)
+    # Parola e bună; urmează codul din aplicația de autentificare.
+    resp = RedirectResponse("/login?step=code", status_code=303)
+    resp.set_cookie("rp_pre", sign(f"pre:{now + PRE_AUTH_MINUTES * 60}"), max_age=PRE_AUTH_MINUTES * 60,
+                    httponly=True, secure=True, samesite="strict")
     return resp
+
+
+@app.post("/login/code")
+async def login_code(request: Request, code: str = Form(...)):
+    ip, now = client_ip(request), time.time()
+    with db() as con:
+        blk = login_block(con, ip, now)
+    if blk:
+        return blocked_redirect(*blk, now)
+    if not valid_pre_auth(request):
+        return RedirectResponse("/login?x=1", status_code=303)
+    with db() as con:
+        kind = twofa.verify(con, code, now)
+    if not kind:
+        return await failed_attempt(ip, now, "/login?step=code&")
+    if kind == "recovery":
+        print(f"login: cod de rezervă folosit de pe {ip}", flush=True)
+    return login_success(ip)
 
 
 @app.get("/logout")
 async def logout():
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie("rp_session")
+    resp.delete_cookie("rp_pre")
     return resp
+
+
+# ---------- 2FA din Setări ----------
+
+async def _code_from(request: Request) -> str:
+    try:
+        return str((await request.json()).get("code") or "")
+    except ValueError:
+        return ""
+
+
+async def _settings_failure(ip: str, now: float, message: str) -> JSONResponse:
+    """Codurile greșite din Setări intră și ele în contoare (cineva cu un telefon furat
+    și sesiunea deschisă nu poate ghici codul ca să dezactiveze 2FA)."""
+    with db() as con:
+        record_failure(con, ip, now)
+        blk = login_block(con, ip, now)
+    await asyncio.sleep(1.5)
+    if blk:
+        return JSONResponse({"ok": False, "message": f"Prea multe coduri greșite. Încearcă din nou peste {max(1, round((blk[0] - now) / 60))} min."}, status_code=429)
+    return JSONResponse({"ok": False, "message": message}, status_code=400)
+
+
+def _blocked_json(ip: str, now: float):
+    with db() as con:
+        blk = login_block(con, ip, now)
+    if blk:
+        return JSONResponse({"ok": False, "message": f"Prea multe încercări greșite. Încearcă din nou peste {max(1, round((blk[0] - now) / 60))} min."}, status_code=429)
+    return None
+
+
+@app.get("/api/2fa")
+async def api_2fa():
+    with db() as con:
+        return twofa.status(con)
+
+
+@app.post("/api/2fa/setup")
+async def api_2fa_setup():
+    with db() as con:
+        if twofa.enabled(con):
+            return JSONResponse({"ok": False, "message": "Autentificarea în doi pași e deja activă."}, status_code=400)
+        secret = twofa.start_setup(con, time.time())
+    account = BASE_URL.split("://", 1)[-1]
+    return {"ok": True, "secret": secret, "uri": twofa.otpauth_uri(secret, account),
+            "minutes": twofa.SETUP_MINUTES}
+
+
+@app.post("/api/2fa/confirm")
+async def api_2fa_confirm(request: Request):
+    ip, now = client_ip(request), time.time()
+    if (b := _blocked_json(ip, now)):
+        return b
+    code = await _code_from(request)
+    with db() as con:
+        if twofa.enabled(con):
+            return JSONResponse({"ok": False, "message": "Autentificarea în doi pași e deja activă."}, status_code=400)
+        if twofa.setup_expired(con, now):
+            return JSONResponse({"ok": False, "expired": True, "message": "Codul QR a expirat. Începe din nou activarea."}, status_code=400)
+        codes = twofa.confirm_setup(con, code, now)
+        if codes:
+            bump_session_epoch(con)
+    if not codes:
+        return await _settings_failure(ip, now, "Codul nu se potrivește. Verifică ora telefonului și încearcă un cod nou.")
+    print("2fa: activată; sesiunile de pe alte dispozitive au fost închise", flush=True)
+    # Sesiunea de pe dispozitivul curent rămâne deschisă, cu noua generație.
+    return set_session(JSONResponse({"ok": True, "recovery": codes}))
+
+
+@app.post("/api/2fa/recovery")
+async def api_2fa_recovery(request: Request):
+    ip, now = client_ip(request), time.time()
+    if (b := _blocked_json(ip, now)):
+        return b
+    code = await _code_from(request)
+    with db() as con:
+        ok = twofa.verify(con, code, now, allow_recovery=False)
+        codes = twofa.new_recovery(con) if ok else None
+    if not codes:
+        return await _settings_failure(ip, now, "Codul din aplicație nu e corect.")
+    return {"ok": True, "recovery": codes}
+
+
+@app.post("/api/2fa/disable")
+async def api_2fa_disable(request: Request):
+    ip, now = client_ip(request), time.time()
+    if (b := _blocked_json(ip, now)):
+        return b
+    code = await _code_from(request)
+    with db() as con:
+        ok = twofa.verify(con, code, now)
+        if ok:
+            twofa.disable(con)
+            bump_session_epoch(con)
+    if not ok:
+        return await _settings_failure(ip, now, "Codul nu e corect.")
+    print("2fa: dezactivată; sesiunile de pe alte dispozitive au fost închise", flush=True)
+    return set_session(JSONResponse({"ok": True}))
 
 
 # ---------- Tesla: tokenuri ----------
