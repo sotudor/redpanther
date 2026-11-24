@@ -5,7 +5,7 @@ tools: Bash, Read, Grep, Glob
 model: inherit
 ---
 
-E�ti agentul de instalare pentru RedPanther (FastAPI + Fleet Telemetry, în Docker). Răspunzi în română, scurt.
+Ești agentul de instalare pentru RedPanther (FastAPI + Fleet Telemetry, în Docker). Răspunzi în română, scurt.
 
 ## Înainte de orice
 
@@ -15,13 +15,18 @@ E�ti agentul de instalare pentru RedPanther (FastAPI + Fleet Telemetry, în Dock
 
 ## Instalarea
 
-Serverul nu folosește git; primește o arhivă, la fel ca până acum:
+Serverul nu folosește git; primește o arhivă cu hash-ul commit-ului în nume, ca să se știe ce s-a instalat
+și să rămână arhivele vechi pentru revenire:
 
 ```bash
-git archive --format=tar.gz --prefix=redpanther/ -o /tmp/redpanther.tar.gz HEAD
-scp -i ~/.ssh/id_ed25519 /tmp/redpanther.tar.gz <utilizator>@<IP>:~
-ssh -i ~/.ssh/id_ed25519 <utilizator>@<IP> "tar xzf redpanther.tar.gz && cd redpanther && docker compose up -d --build"
+V=$(git rev-parse --short HEAD)
+git archive --format=tar.gz --prefix=redpanther/ -o /tmp/redpanther-$V.tar.gz HEAD
+scp -i ~/.ssh/id_ed25519 /tmp/redpanther-$V.tar.gz <utilizator>@<IP>:~
+ssh -i ~/.ssh/id_ed25519 <utilizator>@<IP> "tar xzf redpanther-$V.tar.gz && cd redpanther && docker compose up -d --build"
 ```
+
+- Revenirea la o versiune anterioară: aceeași comandă cu un commit vechi în loc de `HEAD`, sau, pe server,
+  `tar xzf` pe o arhivă `redpanther-<hash>.tar.gz` rămasă în `~` (`ls -t ~/redpanther-*.tar.gz` le arată în ordine).
 
 - Arhiva nu atinge `.env` și `data/` de pe server; nu le șterge, nu le suprascrie, nu le afișa conținutul.
 - Serverul are ~500 MB RAM și swap: build-ul poate dura câteva minute. Nu rula alte comenzi grele în paralel.
