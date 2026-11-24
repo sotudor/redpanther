@@ -16,7 +16,7 @@ CHARGING = {"DetailedChargeStateCharging", "DetailedChargeStateStarting"}
 PLUGGED = {"DetailedChargeStateNoPower", "DetailedChargeStateStarting", "DetailedChargeStateCharging",
            "DetailedChargeStateComplete", "DetailedChargeStateStopped"}
 UNPLUGGED = {"DetailedChargeStateDisconnected"}
-CHARGES_VERSION = "2"   # la schimbarea regulii, încărcările vechi se recalculează o dată
+CHARGES_VERSION = "3"   # la schimbarea regulii, încărcările vechi se recalculează o dată
 SENTRY_OFF = {"SentryModeStateOff", "SentryModeStateUnknown"}
 STALE_SECONDS = 30 * 60
 DEFAULT_KWH = 75.0
@@ -105,28 +105,23 @@ def last_data_ts(con, vin):
 
 def counter_increments(con, vin, field, t0, t1):
     """Creșterile unui contor de energie (ex. ACChargingEnergyIn) în [t0, t1], ca listă (ts, kWh).
-    Contorul poate porni de la zero la o nouă sesiune; o scădere înseamnă că s-a resetat."""
-    r = con.execute("SELECT value FROM telemetry_log WHERE vin=? AND field=? AND ts<? ORDER BY ts DESC LIMIT 1",
-                    (vin, field, t0)).fetchone()
-    prev = r[0] if r else None
-    out = []
-    for ts, v in series(con, vin, field, t0, t1):
-        if prev is not None:
-            d = v - prev if v >= prev else v
-            if d > 0:
-                out.append((ts, d))
-        prev = v
-    return out
+    Se folosesc doar valorile din interval: energia = de la prima la ultima valoare, adunând
+    doar creșterile, deci o resetare a contorului la mijloc nu adaugă nimic fals. Dacă valoarea
+    nu se schimbă deloc (mașina retrimite contorul vechi de la altă încărcare), contorul e ignorat."""
+    pts = series(con, vin, field, t0, t1)
+    if len({v for _, v in pts}) < 2:
+        return []
+    return [(b[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]) if b[1] > a[1]]
 
 
-def energy_increments(con, vin, t0, t1):
-    """Energia luată de la încărcător în [t0, t1], ca (ts, kWh). Dacă mașina nu a trimis
-    contoarele de energie, folosește creșterile energiei din baterie."""
-    ac = counter_increments(con, vin, "ACChargingEnergyIn", t0, t1)
-    dc = counter_increments(con, vin, "DCChargingEnergyIn", t0, t1)
-    best = max((ac, dc), key=lambda inc: sum(d for _, d in inc))
-    if best:
-        return best
+def energy_increments(con, vin, t0, t1, dc):
+    """Energia luată de la încărcător în sesiunea [t0, t1], ca (ts, kWh), din contorul potrivit
+    tipului încărcării: AC → ACChargingEnergyIn, DC → DCChargingEnergyIn. Celălalt contor poate
+    rămâne la valoarea de la încărcarea anterioară, deci nu se folosește. Dacă mașina nu a trimis
+    contorul, folosește creșterile energiei din baterie."""
+    inc = counter_increments(con, vin, "DCChargingEnergyIn" if dc else "ACChargingEnergyIn", t0, t1)
+    if inc:
+        return inc
     pts = series(con, vin, "EnergyRemaining", t0, t1)
     return [(b[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]) if b[1] > a[1]]
 
@@ -255,13 +250,14 @@ def analyze_charges(con, vin, since, now):
     for t0, t1 in segments(con, vin, "DetailedChargeState", PLUGGED, UNPLUGGED, since, close_stale=False):
         te = t1 or now
         se, ee = value_at(con, vin, "EnergyRemaining", t0), value_at(con, vin, "EnergyRemaining", te)
-        e_in = sum(d for _, d in energy_increments(con, vin, t0, te))
-        gain = (ee - se) if se is not None and ee is not None else 0
-        if t1 is not None and gain < 0.2 and e_in < 0.2:
-            continue   # cuplată, dar fără energie adăugată (ex. încărcare programată care n-a pornit)
         dc_power = agg(con, "MAX", vin, "DCChargingPower", t0, te) or 0
         ac_power = agg(con, "MAX", vin, "ACChargingPower", t0, te) or 0
         fast = agg(con, "MAX", vin, "FastChargerPresent", t0, te) or 0
+        dc = dc_power > 1 or fast >= 1
+        e_in = sum(d for _, d in energy_increments(con, vin, t0, te, dc))
+        gain = (ee - se) if se is not None and ee is not None else 0
+        if t1 is not None and gain < 0.2 and e_in < 0.2:
+            continue   # cuplată, dar fără energie adăugată (ex. încărcare programată care n-a pornit)
         la, lo = loc_at(con, vin, t0)
         con.execute(
             """INSERT INTO charges (vin, start_ts, end_ts, start_soc, end_soc, start_energy, end_energy,
@@ -271,7 +267,7 @@ def analyze_charges(con, vin, since, now):
                energy_in=excluded.energy_in, max_power=excluded.max_power, dc=excluded.dc,
                lat=excluded.lat, lon=excluded.lon, charge_seconds=excluded.charge_seconds""",
             (vin, t0, t1, value_at(con, vin, "Soc", t0), value_at(con, vin, "Soc", te), se, ee,
-             e_in or None, max(dc_power, ac_power) or None, 1 if (dc_power > 1 or fast >= 1) else 0, la, lo,
+             e_in or None, max(dc_power, ac_power) or None, 1 if dc else 0, la, lo,
              state_seconds(con, vin, "DetailedChargeState", CHARGING, t0, te)),
         )
         produced.add(t0)
@@ -296,10 +292,12 @@ def charged_by_day(con, vin, days, tz):
     t0, _ = day_bounds(days[0], days[0], tz)
     _, t1 = day_bounds(days[-1], days[-1], tz)
     per = {k: 0.0 for k in days}
-    for c in con.execute("SELECT start_ts, end_ts FROM charges WHERE vin=? AND start_ts<? AND "
+    for c in con.execute("SELECT start_ts, end_ts, dc FROM charges WHERE vin=? AND start_ts<? AND "
                          "(end_ts IS NULL OR end_ts>?)", (vin, t1, t0)).fetchall():
-        a, b = max(c[0], t0), min(c[1] or time.time(), t1)
-        for ts, kwh in energy_increments(con, vin, a, b):
+        # Creșterile se calculează pe toată sesiunea (aceeași regulă ca energy_in), apoi se împart pe zile.
+        for ts, kwh in energy_increments(con, vin, c[0], c[1] or time.time(), c[2]):
+            if not t0 <= ts <= t1:
+                continue
             k = datetime.fromtimestamp(ts, tz).date().isoformat()
             if k in per:
                 per[k] += kwh
@@ -317,11 +315,14 @@ def days_between(day_from: str, day_to: str):
 def analyze_all(db, days=2):
     with db() as con:
         vins = [r[0] for r in con.execute("SELECT DISTINCT vin FROM telemetry_events")]
-        redo = (con.execute("SELECT v FROM analysis_meta WHERE k='charges_version'").fetchone() or [None])[0] != CHARGES_VERSION
+        stored = (con.execute("SELECT v FROM analysis_meta WHERE k='charges_version'").fetchone() or [None])[0]
+        redo = stored != CHARGES_VERSION
+        # v2 (cuplare→decuplare) a schimbat ce e o încărcare: tot istoricul. v3 (energia din contorul
+        # AC sau DC, după tipul încărcării) corectează doar energy_in: ultimele 30 de zile.
+        redo_since = 0 if stored in (None, "1") else time.time() - 30 * 86400
         for vin in vins:
             if redo:
-                # Regula încărcărilor s-a schimbat: recalculăm tot istoricul o singură dată.
-                analyze_charges(con, vin, 0, time.time())
+                analyze_charges(con, vin, redo_since, time.time())
             analyze(con, vin, days)
         if redo:
             con.execute("INSERT INTO analysis_meta VALUES ('charges_version', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",

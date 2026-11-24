@@ -1,0 +1,114 @@
+"""Energia de la încărcător (energy_in) pentru încărcări.
+
+Rulare (din rădăcina repository-ului, are nevoie doar de httpx, importat de analysis.py):
+    python -m unittest discover -s tests
+"""
+import os
+import sqlite3
+import sys
+import time
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+import analysis  # noqa: E402
+
+VIN = "TESTVIN"
+H = 3600
+
+
+class ChargeEnergyTest(unittest.TestCase):
+    def setUp(self):
+        self.con = sqlite3.connect(":memory:")
+        self.con.row_factory = sqlite3.Row
+        self.con.executescript(
+            """
+            CREATE TABLE telemetry_log (vin TEXT, ts REAL, field TEXT, value REAL);
+            CREATE TABLE telemetry_events (vin TEXT, ts REAL, field TEXT, value TEXT);
+            CREATE TABLE telemetry_loc (vin TEXT, ts REAL, lat REAL, lon REAL);
+            """
+        )
+        analysis.init_db(self.con)
+        self.t0 = time.time() - 2 * 86400
+
+    def log(self, ts, field, value):
+        self.con.execute("INSERT INTO telemetry_log VALUES (?,?,?,?)", (VIN, ts, field, value))
+
+    def event(self, ts, value):
+        self.con.execute("INSERT INTO telemetry_events VALUES (?,?,?,?)", (VIN, ts, "DetailedChargeState", value))
+
+    def charges(self):
+        analysis.analyze_charges(self.con, VIN, 0, time.time())
+        return self.con.execute("SELECT * FROM charges WHERE vin=? ORDER BY start_ts", (VIN,)).fetchall()
+
+    def ac_session_with_stale_dc(self):
+        """Sesiune AC de 9,4 kWh (măsurată la wallbox); contorul DC a rămas la 27,4 kWh de la ultima
+        încărcare rapidă, a raportat 0 o dată între timp și e retrimis neschimbat în timpul sesiunii."""
+        t = self.t0
+        self.log(t - 2 * H, "DCChargingEnergyIn", 0.0)
+        self.event(t, "DetailedChargeStateCharging")
+        for i in range(5):   # 4 h la ~2,35 kW
+            ts = t + i * H
+            self.log(ts, "ACChargingEnergyIn", 2.35 * i)
+            self.log(ts, "DCChargingEnergyIn", 27.4)
+            self.log(ts, "ACChargingPower", 2.4)
+            self.log(ts, "EnergyRemaining", 40.0 + 2.1 * i)
+            self.log(ts, "Soc", 55.0 + 2.8 * i)
+        self.event(t + 4 * H, "DetailedChargeStateComplete")
+        self.event(t + 5 * H, "DetailedChargeStateDisconnected")
+        return t
+
+    def test_ac_session_ignores_stale_dc_counter(self):
+        self.ac_session_with_stale_dc()
+        (c,) = self.charges()
+        self.assertFalse(c["dc"])
+        self.assertAlmostEqual(c["energy_in"], 9.4, places=2)
+        d = analysis.charge_dict(self.con, c)
+        self.assertEqual(d["charger_kwh"], 9.4)
+        self.assertEqual(d["avg_kw"], 2.4)          # 9,4 kWh / 4 h de încărcare efectivă
+        self.assertEqual(d["efficiency"], 89)       # 8,4 kWh în baterie / 9,4 kWh de la încărcător
+
+    def test_daily_chart_uses_same_counter(self):
+        t = self.ac_session_with_stale_dc()
+        self.charges()
+        day = analysis.datetime.fromtimestamp(t + 2 * H).date()
+        days = analysis.days_between((day - analysis.timedelta(days=1)).isoformat(),
+                                     (day + analysis.timedelta(days=1)).isoformat())
+        total = sum(x["kwh"] for x in analysis.charged_by_day(self.con, VIN, days, None))
+        self.assertAlmostEqual(total, 9.4, places=2)
+
+    def test_counter_reset_mid_session_counts_only_increases(self):
+        t = self.t0
+        self.event(t, "DetailedChargeStateCharging")
+        for i, v in enumerate([12.0, 13.0, 14.0, 0.0, 1.5, 3.0]):   # resetare după 14,0
+            self.log(t + i * 600, "ACChargingEnergyIn", v)
+            self.log(t + i * 600, "EnergyRemaining", 30.0 + 0.9 * i)
+        self.event(t + 3600, "DetailedChargeStateDisconnected")
+        (c,) = self.charges()
+        self.assertAlmostEqual(c["energy_in"], 5.0, places=2)   # 12→14 și 0→3
+
+    def test_dc_session_uses_dc_counter(self):
+        t = self.t0
+        self.event(t, "DetailedChargeStateCharging")
+        for i in range(4):
+            self.log(t + i * 600, "DCChargingEnergyIn", 10.0 * i)
+            self.log(t + i * 600, "ACChargingEnergyIn", 9.4)   # rămas de la ultima încărcare AC
+            self.log(t + i * 600, "DCChargingPower", 120.0)
+            self.log(t + i * 600, "EnergyRemaining", 20.0 + 9.5 * i)
+        self.event(t + 1800, "DetailedChargeStateDisconnected")
+        (c,) = self.charges()
+        self.assertTrue(c["dc"])
+        self.assertAlmostEqual(c["energy_in"], 30.0, places=2)
+
+    def test_unchanged_counter_falls_back_to_battery_energy(self):
+        t = self.t0
+        self.event(t, "DetailedChargeStateCharging")
+        for i in range(3):
+            self.log(t + i * 600, "ACChargingEnergyIn", 9.4)   # nu se schimbă: ignorat
+            self.log(t + i * 600, "EnergyRemaining", 50.0 + 1.0 * i)
+        self.event(t + 1800, "DetailedChargeStateDisconnected")
+        (c,) = self.charges()
+        self.assertAlmostEqual(c["energy_in"], 2.0, places=2)
+
+
+if __name__ == "__main__":
+    unittest.main()
