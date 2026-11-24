@@ -849,6 +849,7 @@ async def api_car(vin: str):
         drv = con.execute("SELECT * FROM drives WHERE vin=? AND end_ts IS NULL", (vin,)).fetchone()
         chg = con.execute("SELECT * FROM charges WHERE vin=? AND end_ts IS NULL ORDER BY start_ts DESC", (vin,)).fetchone()
         session = analysis.charge_dict(con, chg) if chg else None
+        split = analysis.charged_split(con, vin)
         loc = con.execute("SELECT lat, lon, ts FROM telemetry_loc WHERE vin=? ORDER BY ts DESC LIMIT 1", (vin,)).fetchone()
         place = analysis.label_for(con, loc[0], loc[1]) if loc else None
         st = con.execute("SELECT has_photo FROM vehicle_settings WHERE vin=?", (vin,)).fetchone()
@@ -860,7 +861,7 @@ async def api_car(vin: str):
         "vin": vin, "name": row["name"], "state": state, "charge_state": cs, "charge_session": session,
         "tesla_state": row["state"],
         "polled": json.loads(row["data"]) if row["data"] else None, "polled_ts": row["data_ts"],
-        "live": live, "health": h, "today": t, "place": place,
+        "live": live, "health": h, "today": t, "place": place, "charged_split": split,
         "has_photo": bool(st and st[0]),
     }
 
@@ -902,8 +903,7 @@ async def api_charges(vin: str, frm: str = "", to: str = ""):
     with db() as con:
         rows = con.execute("SELECT * FROM charges WHERE vin=? AND start_ts>=? AND start_ts<? ORDER BY start_ts DESC",
                            (vin, t0, t1)).fetchall()
-        return {"from": d0, "to": d1, "charges": [analysis.charge_dict(con, r) for r in rows],
-                "daily": analysis.charged_by_day(con, vin, analysis.days_between(d0, d1), TZ)}
+        return {"from": d0, "to": d1, "charges": [analysis.charge_dict(con, r) for r in rows]}
 
 
 @app.get("/api/charge/{charge_id}")

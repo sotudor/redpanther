@@ -1,4 +1,4 @@
-const CACHE = "rp-v6";
+const CACHE = "rp-v7";
 const SHELL = ["/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (e) => {

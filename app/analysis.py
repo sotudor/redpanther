@@ -286,22 +286,14 @@ def analyze_charges(con, vin, since, now):
                 con.execute("UPDATE charges SET manual_cost=?, manual_currency=? WHERE id=?", (r[2], r[3], target[0]))
 
 
-def charged_by_day(con, vin, days, tz):
-    """Energia luată de la încărcător în fiecare zi din `days`, după momentul în care a intrat,
-    deci o încărcare peste noapte se împarte corect între cele două zile."""
-    t0, _ = day_bounds(days[0], days[0], tz)
-    _, t1 = day_bounds(days[-1], days[-1], tz)
-    per = {k: 0.0 for k in days}
-    for c in con.execute("SELECT start_ts, end_ts, dc FROM charges WHERE vin=? AND start_ts<? AND "
-                         "(end_ts IS NULL OR end_ts>?)", (vin, t1, t0)).fetchall():
-        # Creșterile se calculează pe toată sesiunea (aceeași regulă ca energy_in), apoi se împart pe zile.
-        for ts, kwh in energy_increments(con, vin, c[0], c[1] or time.time(), c[2]):
-            if not t0 <= ts <= t1:
-                continue
-            k = datetime.fromtimestamp(ts, tz).date().isoformat()
-            if k in per:
-                per[k] += kwh
-    return [{"day": k, "kwh": round(per[k], 2)} for k in days]
+def charged_split(con, vin):
+    """Energia încărcată AC și DC din toate încărcările înregistrate (de la încărcător; dacă lipsește,
+    cât a intrat în baterie) și momentul primei încărcări. Tesla nu trimite totalul pe viață pe tipuri."""
+    r = con.execute(
+        "SELECT SUM(CASE WHEN dc THEN 0 ELSE e END), SUM(CASE WHEN dc THEN e ELSE 0 END), MIN(start_ts), COUNT(e) "
+        "FROM (SELECT dc, start_ts, COALESCE(energy_in, MAX(end_energy - start_energy, 0)) e FROM charges WHERE vin=?)",
+        (vin,)).fetchone()
+    return {"ac_kwh": round(r[0] or 0, 2), "dc_kwh": round(r[1] or 0, 2), "since": r[2], "charges": r[3]}
 
 
 def days_between(day_from: str, day_to: str):

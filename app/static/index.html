@@ -19,6 +19,8 @@
   --accent: #D93A41; --accent-soft: rgba(217,58,65,.12);
   --charge: #12A15E; --charge-soft: rgba(18,161,94,.12);
   --blue: #2F6FEB; --amber: #D98A0B; --violet: #7C5CE0;
+  /* AC / DC în grafice: perechea trece testele pentru daltonism (verde/portocaliu nu trece) */
+  --ac: #2F6FEB; --dc: #C97A0A;
   --shadow: 0 1px 2px rgba(16,24,40,.05), 0 4px 16px rgba(16,24,40,.06);
   color-scheme: light;
   box-sizing: border-box;
@@ -31,6 +33,7 @@
     --accent: #FF5A61; --accent-soft: rgba(255,90,97,.14);
     --charge: #3DD68C; --charge-soft: rgba(61,214,140,.14);
     --blue: #5B93FF; --amber: #F5A524; --violet: #A78BFA;
+    --ac: #4A82EE; --dc: #C97F12;
     --shadow: none;
     color-scheme: dark;
   }
@@ -145,6 +148,46 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .legend i.up { background: var(--charge); }
 .legend i.down { background: var(--accent); }
 .chart-empty { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: .85rem; text-align: center; }
+.legend i.ac, .swatch.ac { background: var(--ac); }
+.legend i.dc, .swatch.dc { background: var(--dc); }
+.legend i.ac, .legend i.dc { height: 10px; width: 10px; border-radius: 3px; }
+
+/* AC / DC: gogoașă 3D din straturi suprapuse (fiecare strat e un inel conic, cele de jos mai întunecate) */
+.d3 { display: flex; align-items: center; gap: 1.1rem; margin-top: .3rem; }
+.d3-stage { position: relative; flex: none; width: 150px; height: 118px; display: grid; place-items: center; perspective: 650px; }
+.d3-shadow { position: absolute; left: 14px; right: 14px; bottom: 4px; height: 36px; border-radius: 50%; background: radial-gradient(closest-side, rgba(0,0,0,.30), transparent); }
+.d3-disc { position: relative; width: 124px; height: 124px; margin-top: -14px; transform-style: preserve-3d; transform: rotateX(62deg) rotateZ(-150deg); transition: transform 1.2s cubic-bezier(.2,.75,.2,1); }
+.d3-disc.in { transform: rotateX(62deg) rotateZ(-35deg); }
+.d3-l { position: absolute; inset: 0; border-radius: 50%; background: var(--g); filter: brightness(.58);
+  -webkit-mask: radial-gradient(farthest-side, transparent 50%, #000 calc(50% + 1px)); mask: radial-gradient(farthest-side, transparent 50%, #000 calc(50% + 1px));
+  transform: translateZ(calc(var(--z) * -1px)); }
+.d3-l.top { filter: none; }
+.d3-l.top::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: linear-gradient(155deg, rgba(255,255,255,.42), rgba(255,255,255,0) 55%); }
+.d3-legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .7rem; }
+.d3-row { display: flex; align-items: flex-start; gap: .55rem; }
+.swatch { flex: none; width: 12px; height: 12px; border-radius: 4px; margin-top: .35rem; }
+.d3-row b { font-size: 1.3rem; font-weight: 700; letter-spacing: -.01em; }
+.d3-row .t { color: var(--muted); font-weight: 600; margin-left: .3rem; }
+.d3-row .sub { margin-top: 0; }
+.d3-total { border-top: 1px solid var(--line); padding-top: .55rem; color: var(--muted); font-size: .85rem; }
+.d3-total b { color: var(--ink); }
+
+/* Charging: Zi / Lună / An / Custom, cu săgeți pentru perioada anterioară și următoare */
+.pnav { display: flex; align-items: center; gap: .5rem; margin-top: .65rem; }
+.pnav .lbl { flex: 1; text-align: center; font-weight: 600; }
+.pnav .icon-btn { width: 38px; height: 38px; }
+.pnav .icon-btn:disabled { opacity: .3; cursor: default; }
+.uplink { display: inline-flex; align-items: center; gap: .3rem; border: 0; background: none; color: var(--accent); font-weight: 600; padding: .5rem .25rem 0; cursor: pointer; font-size: .9rem; }
+.uplink svg { width: 16px; height: 16px; }
+.sum-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .75rem; }
+.sum-strip .card { padding: .7rem .8rem; }
+.sum-strip .v { font-size: 1.15rem; }
+.item .ic.ac { background: color-mix(in srgb, var(--ac) 14%, transparent); color: var(--ac); }
+.item .ic.dc2 { background: color-mix(in srgb, var(--dc) 16%, transparent); color: var(--dc); }
+.item .ic.cal { background: var(--charge-soft); color: var(--charge); font-weight: 700; font-size: .95rem; }
+.item.empty-day { opacity: .55; }
+.chart .hit { fill: transparent; cursor: pointer; }
+.chart .hit:hover { fill: var(--surface-2); opacity: .6; }
 
 /* autentificarea în doi pași */
 .steps { margin: .6rem 0 0; padding-left: 1.2rem; color: var(--muted); font-size: .88rem; }
@@ -259,6 +302,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 @media (prefers-reduced-motion: reduce) {
   .gauge .fill, .pack-fill, .car-top .wheel { transition: none; }
   .icon-btn.spin svg, .gauge.charging .fill, .gauge.charging .fill::after, .battery.charging .pct .bolt { animation: none; }
+  .d3-disc { transition: none; }
 }
 </style>
 </head>
@@ -323,6 +367,10 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
       </div>
       <div class="card"><div class="k">Diferență celule</div><div class="v"><span id="cellDiff">–</span><small>mV</small></div><div class="sub" id="cellSub"></div></div>
       <div class="card"><div class="k">Consumat în viață</div><div class="v"><span id="lifetime">–</span><small>kWh</small></div></div>
+      <div class="card wide">
+        <div class="card-head"><div class="k">Energie încărcată · AC / DC</div><div class="sub right" id="splitSince"></div></div>
+        <div id="carSplit"></div>
+      </div>
     </div>
     <div class="section-label">Mașina</div>
     <div class="grid">
@@ -395,11 +443,17 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
   <!-- CHARGING -->
   <section class="view" id="view-charging">
     <h1 class="title">Încărcări</h1>
-    <div data-period></div>
+    <div id="chPeriod"></div>
+    <div class="sum-strip" id="chSum"></div>
     <div class="list" id="chargeList" style="margin-top:.5rem"></div>
     <div class="card chart-card">
-      <div class="card-head"><h3>Energie încărcată pe zi <span class="k">(kWh)</span></h3><span class="k" id="chDailyTotal"></span></div>
-      <div class="chart" id="chDaily"></div>
+      <div class="card-head"><h3 id="chChartTitle"></h3><span class="k" id="chChartTotal"></span></div>
+      <div class="chart" id="chChart"></div>
+      <div class="chart-foot"><span id="chChartNote"></span><span class="legend"><i class="ac"></i>AC<i class="dc"></i>DC</span></div>
+    </div>
+    <div class="card chart-card">
+      <h3>AC / DC în perioada aleasă</h3>
+      <div id="chSplit"></div>
     </div>
   </section>
 
@@ -560,26 +614,67 @@ function el(name, attrs, parent) { const e = document.createElementNS(NS, name);
 function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p; return 10 * p; }
 
 function barChart(box, labels, values, color, digits = 0) {
+  stackChart(box, labels, values.map((v) => [{ v, c: color }]), { digits });
+}
+
+/* Bare stivuite: stacks[i] = [{ v, c (culoare), t (text pentru tooltip) }], de jos în sus,
+   cu 2 px între segmente. `onPick(i)` face fiecare coloană apăsabilă. */
+function stackChart(box, labels, stacks, { digits = 0, every = 0, unit = "", onPick = null } = {}) {
   box.replaceChildren();
   const W = box.clientWidth || 320, H = box.clientHeight || 170, L = 30, B = 22, T = 8;
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}` }, box);
-  const max = niceMax(Math.max(0, ...values.map((v) => v || 0)));
+  const sums = stacks.map((s) => s.reduce((a, x) => a + (x.v || 0), 0));
+  const max = niceMax(Math.max(0, ...sums));
   for (let i = 0; i <= 2; i++) {
     const y = T + (H - T - B) * (1 - i / 2);
     el("line", { x1: L, x2: W, y1: y, y2: y, stroke: "var(--line)", "stroke-width": 1 }, svg);
     el("text", { x: L - 6, y: y + 3, "text-anchor": "end" }, svg).textContent = fmt(max * i / 2, max < 20 ? 1 : 0);
   }
-  const n = values.length, slot = (W - L) / n, bw = Math.max(2, Math.min(28, slot * .62));
-  const every = Math.ceil(n / 10);
-  values.forEach((v, i) => {
+  const n = stacks.length, slot = (W - L) / n, bw = Math.max(2, Math.min(28, slot * .62));
+  every = every || Math.ceil(n / 10);
+  stacks.forEach((s, i) => {
     const x = L + slot * i + (slot - bw) / 2;
-    if (v) {
-      const h = (H - T - B) * (v / max);
-      const r = el("rect", { x, y: H - B - h, width: bw, height: Math.max(h, 1.5), rx: Math.min(5, bw / 2), fill: color }, svg);
-      el("title", {}, r).textContent = `${labels[i]}: ${fmt(v, digits)}`;
+    if (onPick && sums[i]) {
+      const hit = el("rect", { class: "hit", x: L + slot * i, y: T, width: slot, height: H - T - B, rx: 6 }, svg);
+      hit.onclick = () => onPick(i);
+      el("title", {}, hit).textContent = `${labels[i]}: ${fmt(sums[i], digits)}${unit ? " " + unit : ""}`;
     }
+    let y = H - B;
+    const segs = s.filter((x) => x.v > 0);
+    segs.forEach((seg, k) => {
+      const h = Math.max((H - T - B) * (seg.v / max) - (k ? 2 : 0), 1.5);
+      y -= h + (k ? 2 : 0);
+      const top = k === segs.length - 1, r = Math.min(4, bw / 2, h / 2);
+      // capătul de sus rotunjit, baza dreaptă, pe axă
+      const d = top
+        ? `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + bw - r}Q${x + bw},${y} ${x + bw},${y + r}V${y + h}Z`
+        : `M${x},${y + h}V${y}H${x + bw}V${y + h}Z`;
+      const p = el("path", { d, fill: seg.c, "pointer-events": onPick ? "none" : "auto" }, svg);
+      el("title", {}, p).textContent = seg.t || `${labels[i]}: ${fmt(seg.v, digits)}${unit ? " " + unit : ""}`;
+    });
     if (i % every === 0) el("text", { x: x + bw / 2, y: H - 6, "text-anchor": "middle" }, svg).textContent = labels[i];
   });
+}
+
+/* AC / DC ca gogoașă 3D: 12 inele conice suprapuse dau grosimea, cel de sus are o lumină diagonală. */
+function donut3d(box, ac, dc, emptyText = "Nicio încărcare înregistrată.") {
+  ac = ac || 0; dc = dc || 0;
+  const tot = ac + dc;
+  if (tot < 0.05) { box.innerHTML = `<div class="empty-note" style="padding:1.5rem 1rem">${emptyText}</div>`; return; }
+  const acP = Math.round(ac / tot * 100), dcP = 100 - acP;
+  const a = ac / tot * 360, g = ac > 0 && dc > 0 ? 1.6 : 0;
+  const grad = g
+    ? `conic-gradient(var(--ac) 0 ${a - g}deg, transparent 0 ${a + g}deg, var(--dc) 0 ${360 - g}deg, transparent 0)`
+    : `conic-gradient(${ac > 0 ? "var(--ac)" : "var(--dc)"} 0 360deg)`;
+  const layers = Array.from({ length: 12 }, (_, i) => `<div class="d3-l${i ? "" : " top"}" style="--z:${i}"></div>`).reverse().join("");
+  const row = (cls, name, p, kwh) => `<div class="d3-row"><span class="swatch ${cls}"></span><div><b>${p}%</b><span class="t">${name}</span><div class="sub">${fmt(kwh, 1)} kWh</div></div></div>`;
+  box.innerHTML = `<div class="d3">
+    <div class="d3-stage" role="img" aria-label="AC ${acP}% (${fmt(ac, 1)} kWh), DC ${dcP}% (${fmt(dc, 1)} kWh)" title="AC ${fmt(ac, 1)} kWh · DC ${fmt(dc, 1)} kWh">
+      <div class="d3-shadow"></div><div class="d3-disc" style="--g:${grad}">${layers}</div></div>
+    <div class="d3-legend">${row("ac", "AC", acP, ac)}${row("dc", "DC (rapid)", dcP, dc)}<div class="d3-total">Total <b>${fmt(tot, 1)} kWh</b></div></div>
+  </div>`;
+  const disc = box.querySelector(".d3-disc");
+  requestAnimationFrame(() => requestAnimationFrame(() => disc.classList.add("in")));
 }
 
 /* Cadrul comun al graficelor în timp: axe, grilă, etichete. Întoarce null dacă nu sunt date. */
@@ -787,6 +882,10 @@ async function loadCar() {
   $("cellDiff").textContent = fmt(diff);
   $("cellSub").textContent = diff === null ? "" : diff <= 30 ? "Echilibrată" : diff <= 60 ? "În limite normale" : "De urmărit";
   $("lifetime").textContent = fmt(lv(L, "LifetimeEnergyUsed"));
+  // Tesla nu trimite totalul încărcat pe viață pe tipuri, deci împărțirea e din încărcările înregistrate aici.
+  const sp = j.charged_split || {};
+  $("splitSince").textContent = sp.since ? `din ${new Date(sp.since * 1000).toLocaleDateString("ro-RO", { day: "numeric", month: "short", year: "numeric" })} · ${sp.charges} încărcări` : "";
+  donut3d($("carSplit"), sp.ac_kwh, sp.dc_kwh);
 
   $("outTemp").textContent = fmt(lv(L, "OutsideTemp") ?? P.outside_temp, 1);
   $("inTemp").textContent = fmt(lv(L, "InsideTemp") ?? P.inside_temp, 1);
@@ -912,23 +1011,165 @@ async function loadDrive(id) {
 
 /* ---------- CHARGING ---------- */
 const money = (v, c) => v === null || v === undefined ? "–" : `${fmt(v, 2)} ${c || "RON"}`;
-async function loadCharges() {
-  const j = await api(`/api/charges/${encodeURIComponent(current)}${rangeQuery()}`);
-  const box = $("chargeList");
-  const total = j.daily.reduce((a, d) => a + d.kwh, 0);
-  $("chDailyTotal").textContent = total ? `Total ${fmt(total, 1)} kWh` : "";
-  barChart($("chDaily"), dayLabels(j.daily), j.daily.map((d) => d.kwh), "var(--charge)", 1);
-  if (!j.charges.length) { box.innerHTML = '<div class="empty-note">Nicio încărcare în perioada aleasă.</div>'; return; }
-  let html = "", lastDay = "";
-  for (const c of j.charges) {
-    const day = dayName(c.start_ts);
-    if (day !== lastDay) { html += `<div class="day-head">${esc(day)}</div>`; lastDay = day; }
-    // Cât a stat cuplată și, dacă diferă vizibil, cât s-a încărcat efectiv.
-    const active = c.charging_min !== null && c.charging_min < c.duration_min - 5 ? ` (încărcare ${dur(c.charging_min)})` : "";
-    html += `<button class="item" data-id="${c.id}"><span class="ic ${c.dc ? "dc" : "charge"}">${ICON.charge}</span><span class="main"><div class="t1">${esc(c.place || (c.dc ? "Încărcare rapidă" : "Încărcare AC"))}</div><div class="t2">${hm(c.start_ts)} · ${dur(c.duration_min)}${active} · ${c.dc ? "DC" : "AC"}${c.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>+${fmt(c.battery_kwh ?? c.charger_kwh, 1)} kWh</b><span>${c.cost === 0 ? "gratuit" : money(c.cost, c.currency)}</span></span></button>`;
+/* Perioada din Charging, ca la FusionSolar: Zi (implicit azi), Lună, An sau Custom, cu săgeți.
+   `back` ține perioada de unde s-a intrat (lună → zi, an → lună), pentru linkul de întoarcere. */
+let cp = { kind: "day", ref: new Date(), from: null, to: null, back: null };
+const MONTHS = ["ian", "feb", "mar", "apr", "mai", "iun", "iul", "aug", "sep", "oct", "noi", "dec"];
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const atNoon = (iso) => new Date(iso + "T12:00");
+function cpRange(p = cp) {
+  const r = p.ref, y = r.getFullYear(), m = r.getMonth();
+  if (p.kind === "day") return [isoDay(r), isoDay(r)];
+  if (p.kind === "month") return [isoDay(new Date(y, m, 1)), isoDay(new Date(y, m + 1, 0))];
+  if (p.kind === "year") return [`${y}-01-01`, `${y}-12-31`];
+  return [p.from, p.to];
+}
+function cpLabel(p = cp) {
+  const r = p.ref;
+  if (p.kind === "day") {
+    const d = dayName(r.getTime() / 1000);
+    return ["Azi", "Ieri"].includes(d) ? `${d}, ${r.toLocaleDateString("ro-RO", { day: "numeric", month: "long" })}` : `${d} ${r.getFullYear() !== new Date().getFullYear() ? r.getFullYear() : ""}`.trim();
   }
-  box.innerHTML = html;
+  if (p.kind === "month") return cap(r.toLocaleDateString("ro-RO", { month: "long", year: "numeric" }));
+  if (p.kind === "year") return String(r.getFullYear());
+  return "";
+}
+function cpShift(dir) {
+  const r = new Date(cp.ref);
+  if (cp.kind === "day") r.setDate(r.getDate() + dir);
+  if (cp.kind === "month") { r.setDate(1); r.setMonth(r.getMonth() + dir); }
+  if (cp.kind === "year") { r.setDate(1); r.setFullYear(r.getFullYear() + dir); }
+  return r;
+}
+function cpSet(next) { cp = next; renderChargePeriod(); loadCharges(); }
+function renderChargePeriod() {
+  const box = $("chPeriod");
+  const arrow = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+  const nextStart = cp.kind === "custom" ? null : cpRange({ ...cp, ref: cpShift(1) })[0];
+  const back = cp.back ? `<button class="uplink" id="cpBack">${arrow("m15 18-6-6 6-6")}Înapoi la ${esc(cp.back.kind === "year" ? cpLabel(cp.back) : cpLabel(cp.back).toLowerCase())}</button>` : "";
+  box.innerHTML = `<div class="period">${[["day", "Zi"], ["month", "Lună"], ["year", "An"], ["custom", "Custom"]].map(([k, l]) => `<button data-k="${k}" aria-pressed="${cp.kind === k}">${l}</button>`).join("")}</div>
+    ${cp.kind === "custom"
+      ? `<div class="dates"><label class="k">De la<input type="date" data-f value="${cp.from}"></label><label class="k">Până la<input type="date" data-t value="${cp.to}"></label></div>`
+      : `<div class="pnav"><button class="icon-btn" id="cpPrev" aria-label="Perioada anterioară">${arrow("m15 18-6-6 6-6")}</button><div class="lbl">${esc(cpLabel())}</div><button class="icon-btn" id="cpNext" aria-label="Perioada următoare" ${nextStart > isoDay(new Date()) ? "disabled" : ""}>${arrow("m9 18 6-6-6-6")}</button></div>`}
+    ${back}`;
+  box.querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
+    const k = b.dataset.k;
+    if (k === cp.kind) return;
+    if (k === "custom") { const [f, t] = cp.kind === "day" ? [isoDay(new Date(cp.ref.getTime() - 6 * 864e5)), isoDay(cp.ref)] : cpRange(); cpSet({ kind: k, ref: cp.ref, from: f, to: t > isoDay(new Date()) ? isoDay(new Date()) : t, back: null }); }
+    else cpSet({ kind: k, ref: cp.ref, from: null, to: null, back: null });
+  });
+  if (cp.kind === "custom") box.querySelectorAll("input").forEach((i) => i.onchange = () => {
+    let f = box.querySelector("[data-f]").value, t = box.querySelector("[data-t]").value;
+    if (!f || !t) return;
+    if (f > t) [f, t] = [t, f];
+    cpSet({ ...cp, from: f, to: t });
+  });
+  else {
+    $("cpPrev").onclick = () => cpSet({ ...cp, ref: cpShift(-1), back: null });
+    $("cpNext").onclick = () => cpSet({ ...cp, ref: cpShift(1), back: null });
+  }
+  if (cp.back) $("cpBack").onclick = () => cpSet(cp.back);
+}
+const drillTo = (kind, ref) => cpSet({ kind, ref, from: null, to: null, back: { ...cp } });
+
+const kwhOf = (c) => c.charger_kwh ?? c.battery_kwh ?? 0;
+const minOf = (c) => c.charging_min ?? c.duration_min ?? 0;
+const seg = (c, label) => ({ v: kwhOf(c), c: c.dc ? "var(--dc)" : "var(--ac)", t: label });
+function chargeItem(c) {
+  // Cât a stat cuplată și, dacă diferă vizibil, cât s-a încărcat efectiv.
+  const active = c.charging_min !== null && c.charging_min < c.duration_min - 5 ? ` (încărcare ${dur(c.charging_min)})` : "";
+  return `<button class="item" data-id="${c.id}"><span class="ic ${c.dc ? "dc2" : "ac"}">${ICON.charge}</span><span class="main"><div class="t1">${esc(c.place || (c.dc ? "Încărcare rapidă" : "Încărcare AC"))}</div><div class="t2">${hm(c.start_ts)} · ${dur(c.duration_min)}${active} · ${c.dc ? "DC" : "AC"}${c.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>+${fmt(kwhOf(c), 1)} kWh</b><span>${c.cost === 0 ? "gratuit" : money(c.cost, c.currency)}</span></span></button>`;
+}
+function groupItem(attrs, badge, title, list) {
+  const kwh = list.reduce((a, c) => a + kwhOf(c), 0), mins = list.reduce((a, c) => a + minOf(c), 0);
+  const dc = list.filter((c) => c.dc).length;
+  const sub = list.length ? `${list.length} ${list.length === 1 ? "încărcare" : "încărcări"}${dc ? ` (${dc} DC)` : ""} · ${dur(mins)}` : "Nicio încărcare";
+  return `<button class="item${list.length ? "" : " empty-day"}" ${attrs}><span class="ic cal">${badge}</span><span class="main"><div class="t1">${esc(title)}</div><div class="t2">${sub}</div></span><span class="side"><b>${list.length ? "+" + fmt(kwh, 1) + " kWh" : "–"}</b></span></button>`;
+}
+
+async function loadCharges() {
+  if (!$("chPeriod").firstChild) renderChargePeriod();
+  const [f, t] = cpRange();
+  const j = await api(`/api/charges/${encodeURIComponent(current)}?frm=${f}&to=${t}`);
+  const cs = j.charges.slice().sort((a, b) => a.start_ts - b.start_ts);   // cronologic, pentru grafice
+  const box = $("chargeList");
+  const keyDay = (c) => isoDay(new Date(c.start_ts * 1000));
+
+  // totalurile perioadei
+  const kwh = cs.reduce((a, c) => a + kwhOf(c), 0), mins = cs.reduce((a, c) => a + minOf(c), 0);
+  $("chSum").innerHTML = [["Energie", fmt(kwh, 1), "kWh"], ["Încărcări", fmt(cs.length), ""], ["Timp de încărcare", fmt(mins / 60, mins < 600 ? 1 : 0), "h"]]
+    .map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ""}</div></div>`).join("");
+  $("chChartTotal").textContent = kwh ? `Total ${fmt(kwh, 1)} kWh` : "";
+
+  let labels = [], stacks = [], opts = { digits: 1, unit: "kWh" };
+  if (cp.kind === "day") {
+    // O bară pe încărcare, în ora în care a început; mai multe încărcări în aceeași oră se stivuiesc.
+    labels = Array.from({ length: 24 }, (_, h) => String(h));
+    stacks = labels.map(() => []);
+    for (const c of cs) stacks[new Date(c.start_ts * 1000).getHours()].push(seg(c, `${hm(c.start_ts)} · ${c.dc ? "DC" : "AC"}: ${fmt(kwhOf(c), 1)} kWh`));
+    opts.every = 3;
+    $("chChartTitle").innerHTML = 'Energie pe încărcare <span class="k">(kWh)</span>';
+    $("chChartNote").textContent = "După ora de început";
+    box.innerHTML = cs.length ? cs.slice().reverse().map(chargeItem).join("") : '<div class="empty-note">Nicio încărcare în această zi.</div>';
+  } else if (cp.kind === "month") {
+    const days = daysOf(f, t);
+    const by = Object.fromEntries(days.map((d) => [d, []]));
+    for (const c of cs) (by[keyDay(c)] ||= []).push(c);
+    labels = days.map((d) => String(atNoon(d).getDate()));
+    stacks = days.map((d) => typeStacks(by[d]));
+    opts.onPick = (i) => drillTo("day", atNoon(days[i]));
+    $("chChartTitle").innerHTML = 'Energie încărcată pe zi <span class="k">(kWh)</span>';
+    $("chChartNote").textContent = "Apasă pe o zi pentru detalii";
+    const shown = days.filter((d) => by[d].length).reverse();
+    box.innerHTML = shown.length ? shown.map((d) => groupItem(`data-day="${d}"`, atNoon(d).getDate(), dayName(atNoon(d).getTime() / 1000), by[d])).join("") : '<div class="empty-note">Nicio încărcare în această lună.</div>';
+    box.querySelectorAll("[data-day]").forEach((b) => b.onclick = () => drillTo("day", atNoon(b.dataset.day)));
+  } else if (cp.kind === "year") {
+    const y = cp.ref.getFullYear();
+    const by = Array.from({ length: 12 }, () => []);
+    for (const c of cs) by[new Date(c.start_ts * 1000).getMonth()].push(c);
+    labels = MONTHS.slice();
+    stacks = by.map(typeStacks);
+    opts.every = 1;
+    opts.onPick = (i) => drillTo("month", new Date(y, i, 1, 12));
+    $("chChartTitle").innerHTML = 'Energie încărcată pe lună <span class="k">(kWh)</span>';
+    $("chChartNote").textContent = "Apasă pe o lună pentru detalii";
+    // toate lunile până la cea curentă (sau tot anul, dacă e unul trecut), cea mai recentă sus
+    const last = y < new Date().getFullYear() ? 11 : y > new Date().getFullYear() ? -1 : new Date().getMonth();
+    const ms = Array.from({ length: last + 1 }, (_, m) => m).reverse();
+    box.innerHTML = ms.length ? ms.map((m) => groupItem(`data-month="${m}"`, MONTHS[m], cap(new Date(y, m, 1).toLocaleDateString("ro-RO", { month: "long" })), by[m])).join("") : '<div class="empty-note">Niciun an cu date.</div>';
+    box.querySelectorAll("[data-month]").forEach((b) => b.onclick = () => drillTo("month", new Date(y, Number(b.dataset.month), 1, 12)));
+  } else {
+    const days = daysOf(f, t);
+    const by = Object.fromEntries(days.map((d) => [d, []]));
+    for (const c of cs) (by[keyDay(c)] ||= []).push(c);
+    labels = dayLabels(days.map((day) => ({ day })));
+    stacks = days.map((d) => typeStacks(by[d]));
+    opts.onPick = (i) => drillTo("day", atNoon(days[i]));
+    $("chChartTitle").innerHTML = 'Energie încărcată pe zi <span class="k">(kWh)</span>';
+    $("chChartNote").textContent = `${atNoon(f).toLocaleDateString("ro-RO", { day: "numeric", month: "short" })} – ${atNoon(t).toLocaleDateString("ro-RO", { day: "numeric", month: "short", year: "numeric" })}`;
+    let html = "", lastDay = "";
+    for (const c of cs.slice().reverse()) {
+      const day = dayName(c.start_ts);
+      if (day !== lastDay) { html += `<div class="day-head">${esc(day)}</div>`; lastDay = day; }
+      html += chargeItem(c);
+    }
+    box.innerHTML = html || '<div class="empty-note">Nicio încărcare în perioada aleasă.</div>';
+  }
   box.querySelectorAll("[data-id]").forEach((b) => b.onclick = () => go("charge", b.dataset.id));
+  stackChart($("chChart"), labels, stacks, opts);
+
+  const ac = cs.filter((c) => !c.dc).reduce((a, c) => a + kwhOf(c), 0), dc = cs.filter((c) => c.dc).reduce((a, c) => a + kwhOf(c), 0);
+  donut3d($("chSplit"), ac, dc, "Nicio încărcare în perioada aleasă.");
+}
+/* Suma pe AC și pe DC a unui grup de încărcări, ca segmente de bară. */
+function typeStacks(list) {
+  const ac = list.filter((c) => !c.dc).reduce((a, c) => a + kwhOf(c), 0), dc = list.filter((c) => c.dc).reduce((a, c) => a + kwhOf(c), 0);
+  return [{ v: ac, c: "var(--ac)", t: `AC: ${fmt(ac, 1)} kWh` }, { v: dc, c: "var(--dc)", t: `DC: ${fmt(dc, 1)} kWh` }];
+}
+function daysOf(f, t) {
+  const out = [];
+  for (let d = atNoon(f); isoDay(d) <= t; d.setDate(d.getDate() + 1)) out.push(isoDay(d));
+  return out;
 }
 async function loadCharge(id) {
   const c = await api(`/api/charge/${id}`);

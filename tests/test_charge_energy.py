@@ -67,14 +67,21 @@ class ChargeEnergyTest(unittest.TestCase):
         self.assertEqual(d["avg_kw"], 2.4)          # 9,4 kWh / 4 h de încărcare efectivă
         self.assertEqual(d["efficiency"], 89)       # 8,4 kWh în baterie / 9,4 kWh de la încărcător
 
-    def test_daily_chart_uses_same_counter(self):
-        t = self.ac_session_with_stale_dc()
+    def test_ac_dc_split(self):
+        self.ac_session_with_stale_dc()
+        t = self.t0 + 10 * H
+        self.event(t, "DetailedChargeStateCharging")
+        for i in range(4):
+            self.log(t + i * 600, "DCChargingEnergyIn", 10.0 * i)
+            self.log(t + i * 600, "DCChargingPower", 120.0)
+            self.log(t + i * 600, "EnergyRemaining", 20.0 + 9.5 * i)
+        self.event(t + 1800, "DetailedChargeStateDisconnected")
         self.charges()
-        day = analysis.datetime.fromtimestamp(t + 2 * H).date()
-        days = analysis.days_between((day - analysis.timedelta(days=1)).isoformat(),
-                                     (day + analysis.timedelta(days=1)).isoformat())
-        total = sum(x["kwh"] for x in analysis.charged_by_day(self.con, VIN, days, None))
-        self.assertAlmostEqual(total, 9.4, places=2)
+        s = analysis.charged_split(self.con, VIN)
+        self.assertAlmostEqual(s["ac_kwh"], 9.4, places=2)
+        self.assertAlmostEqual(s["dc_kwh"], 30.0, places=2)
+        self.assertEqual(s["charges"], 2)
+        self.assertEqual(s["since"], self.t0)
 
     def test_counter_reset_mid_session_counts_only_increases(self):
         t = self.t0
