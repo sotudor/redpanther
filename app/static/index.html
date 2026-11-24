@@ -115,7 +115,25 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .pct { font-size: 1.6rem; font-weight: 700; }
 .gauge { position: relative; height: 12px; border-radius: 999px; background: var(--surface-2); margin-top: .9rem; }
 .gauge .fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: var(--accent); transition: width .8s cubic-bezier(.2,.7,.2,1); }
-.gauge.charging .fill { background: var(--charge); }
+.gauge.charging .fill, .gauge.plugged .fill { background: var(--charge); }
+/* La încărcare: dungi care curg spre dreapta, o lumină care trece peste bară și capătul care pulsează. */
+.gauge.charging .fill {
+  overflow: hidden;
+  background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,.16) 0 8px, transparent 8px 16px);
+  background-size: 22.6px 22.6px;
+  animation: charge-flow .9s linear infinite, charge-glow 1.8s ease-in-out infinite;
+}
+.gauge.charging .fill::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,.55) 50%, transparent 100%);
+  transform: translateX(-100%); animation: charge-sweep 2.2s cubic-bezier(.4,0,.2,1) infinite;
+}
+@keyframes charge-flow { to { background-position: 22.6px 0; } }
+@keyframes charge-sweep { 60%, 100% { transform: translateX(100%); } }
+@keyframes charge-glow { 50% { box-shadow: 0 0 14px 1px var(--charge); } }
+.pct .bolt { display: none; width: 1.1rem; height: 1.1rem; color: var(--charge); vertical-align: -.05em; margin-right: .2rem; }
+.battery.charging .pct .bolt { display: inline-block; animation: bolt-pulse 1.8s ease-in-out infinite; }
+@keyframes bolt-pulse { 50% { opacity: .35; } }
 .gauge .limit { position: absolute; top: -5px; bottom: -5px; width: 3px; border-radius: 2px; background: var(--ink); opacity: .7; display: none; }
 .gauge-legend { display: flex; justify-content: space-between; margin-top: .55rem; color: var(--muted); font-size: .85rem; }
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .75rem; }
@@ -238,7 +256,10 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .login-needed { max-width: 26rem; margin: 3rem auto; text-align: center; }
 .leaflet-container { background: var(--surface-2) !important; font-family: inherit !important; }
 @media (prefers-color-scheme: dark) { .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); } }
-@media (prefers-reduced-motion: reduce) { .gauge .fill, .pack-fill, .car-top .wheel { transition: none; } .icon-btn.spin svg { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .gauge .fill, .pack-fill, .car-top .wheel { transition: none; }
+  .icon-btn.spin svg, .gauge.charging .fill, .gauge.charging .fill::after, .battery.charging .pct .bolt { animation: none; }
+}
 </style>
 </head>
 <body>
@@ -271,7 +292,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
     <div class="battery card" style="margin-top:.9rem">
       <div class="battery-top">
         <div class="big"><span id="carRange">–</span><small>km</small></div>
-        <div class="pct"><span id="carPct">–</span>%</div>
+        <div class="pct"><svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/></svg><span id="carPct">–</span>%</div>
       </div>
       <div class="gauge" id="carGauge"><div class="fill" id="carFill"></div><div class="limit" id="carLimit"></div></div>
       <div class="gauge-legend"><span id="carChargeText">–</span><span id="carLimitText"></span></div>
@@ -376,6 +397,10 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
     <h1 class="title">Încărcări</h1>
     <div data-period></div>
     <div class="list" id="chargeList" style="margin-top:.5rem"></div>
+    <div class="card chart-card">
+      <div class="card-head"><h3>Energie încărcată pe zi <span class="k">(kWh)</span></h3><span class="k" id="chDailyTotal"></span></div>
+      <div class="chart" id="chDaily"></div>
+    </div>
   </section>
 
   <section class="view" id="view-charge">
@@ -709,20 +734,30 @@ async function loadCar() {
   const soc = lv(L, "Soc") ?? lv(L, "BatteryLevel") ?? P.battery_level;
   const rangeKm = lv(L, "RatedRange") !== null ? lv(L, "RatedRange") * MI : P.range_km;
   const limit = lv(L, "ChargeLimitSoc") ?? P.charge_limit;
-  const charging = j.state === "charging";
+  const charging = j.state === "charging", plugged = j.state === "plugged";
   $("carRange").textContent = fmt(rangeKm);
   $("carPct").textContent = fmt(soc);
   $("carFill").style.width = Math.max(0, Math.min(100, soc || 0)) + "%";
   $("carGauge").classList.toggle("charging", charging);
+  $("carGauge").classList.toggle("plugged", plugged);
+  $("carGauge").closest(".battery").classList.toggle("charging", charging);
   if (limit) { $("carLimit").style.display = "block"; $("carLimit").style.left = `calc(${limit}% - 1.5px)`; $("carLimitText").textContent = `Limită ${limit}%`; }
   const acp = lv(L, "ACChargingPower"), dcp = lv(L, "DCChargingPower");
-  $("carChargeText").textContent = charging ? `Se încarcă cu ${fmt(Math.max(acp || 0, dcp || 0), 1)} kW` : j.state === "driving" ? "În mers" : "Nu se încarcă";
-  const cr = $("carChargeRows");
-  cr.hidden = !charging;
-  if (charging) cr.innerHTML = [["Energie în sesiune", fmt(Math.max(lv(L, "ACChargingEnergyIn") || 0, lv(L, "DCChargingEnergyIn") || 0), 1) + " kWh"], ["Tip", dcp > 1 ? "DC (rapid)" : "AC"]].map(([a, b]) => `<div class="row"><span>${a}</span><span>${b}</span></div>`).join("");
+  const pluggedText = { DetailedChargeStateComplete: "Încărcare completă · cuplată", DetailedChargeStateNoPower: "Cuplată · stația nu dă curent" }[j.charge_state] || "Cuplată · încărcarea e oprită";
+  $("carChargeText").textContent = charging ? `Se încarcă cu ${fmt(Math.max(acp || 0, dcp || 0), 1)} kW` : plugged ? pluggedText : j.state === "driving" ? "În mers" : "Nu se încarcă";
+  const cr = $("carChargeRows"), s = j.charge_session;
+  cr.hidden = !(charging || plugged) || !s;
+  if (s && (charging || plugged)) cr.innerHTML = [
+    ["Energie de la cuplare", fmt(s.charger_kwh ?? s.battery_kwh, 1) + " kWh"],
+    ["Cuplată de", dur(s.duration_min) + (s.charging_min !== null && s.charging_min < s.duration_min - 5 ? ` (încărcare ${dur(s.charging_min)})` : "")],
+    ["Tip", s.dc || dcp > 1 ? "DC (rapid)" : "AC"]
+  ].map(([a, b]) => `<div class="row"><span>${a}</span><span>${b}</span></div>`).join("");
 
   const locked = lv(L, "Locked"), sentry = lv(L, "SentryMode");
-  const stateChip = j.state === "driving" ? '<span class="chip ok"><span class="dot"></span>În mers</span>' : charging ? '<span class="chip ok"><span class="dot"></span>Se încarcă</span>' : `<span class="chip"><span class="dot"></span>Parcată${j.place ? " · " + esc(j.place) : ""}</span>`;
+  const stateChip = j.state === "driving" ? '<span class="chip ok"><span class="dot"></span>În mers</span>'
+    : charging ? '<span class="chip ok"><span class="dot"></span>Se încarcă</span>'
+    : plugged ? `<span class="chip ok"><span class="dot"></span>Cuplată${j.place ? " · " + esc(j.place) : ""}</span>`
+    : `<span class="chip"><span class="dot"></span>Parcată${j.place ? " · " + esc(j.place) : ""}</span>`;
   $("carChips").innerHTML = stateChip
     + (locked === null ? "" : locked ? '<span class="chip">Încuiată</span>' : '<span class="chip alert">Descuiată</span>')
     + (sentry && !["SentryModeStateOff", "SentryModeStateUnknown"].includes(sentry) ? '<span class="chip">Sentry activ</span>' : "");
@@ -880,12 +915,17 @@ const money = (v, c) => v === null || v === undefined ? "–" : `${fmt(v, 2)} ${
 async function loadCharges() {
   const j = await api(`/api/charges/${encodeURIComponent(current)}${rangeQuery()}`);
   const box = $("chargeList");
+  const total = j.daily.reduce((a, d) => a + d.kwh, 0);
+  $("chDailyTotal").textContent = total ? `Total ${fmt(total, 1)} kWh` : "";
+  barChart($("chDaily"), dayLabels(j.daily), j.daily.map((d) => d.kwh), "var(--charge)", 1);
   if (!j.charges.length) { box.innerHTML = '<div class="empty-note">Nicio încărcare în perioada aleasă.</div>'; return; }
   let html = "", lastDay = "";
   for (const c of j.charges) {
     const day = dayName(c.start_ts);
     if (day !== lastDay) { html += `<div class="day-head">${esc(day)}</div>`; lastDay = day; }
-    html += `<button class="item" data-id="${c.id}"><span class="ic ${c.dc ? "dc" : "charge"}">${ICON.charge}</span><span class="main"><div class="t1">${esc(c.place || (c.dc ? "Încărcare rapidă" : "Încărcare AC"))}</div><div class="t2">${hm(c.start_ts)} · ${dur(c.duration_min)} · ${c.dc ? "DC" : "AC"}${c.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>+${fmt(c.battery_kwh ?? c.charger_kwh, 1)} kWh</b><span>${c.cost === 0 ? "gratuit" : money(c.cost, c.currency)}</span></span></button>`;
+    // Cât a stat cuplată și, dacă diferă vizibil, cât s-a încărcat efectiv.
+    const active = c.charging_min !== null && c.charging_min < c.duration_min - 5 ? ` (încărcare ${dur(c.charging_min)})` : "";
+    html += `<button class="item" data-id="${c.id}"><span class="ic ${c.dc ? "dc" : "charge"}">${ICON.charge}</span><span class="main"><div class="t1">${esc(c.place || (c.dc ? "Încărcare rapidă" : "Încărcare AC"))}</div><div class="t2">${hm(c.start_ts)} · ${dur(c.duration_min)}${active} · ${c.dc ? "DC" : "AC"}${c.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>+${fmt(c.battery_kwh ?? c.charger_kwh, 1)} kWh</b><span>${c.cost === 0 ? "gratuit" : money(c.cost, c.currency)}</span></span></button>`;
   }
   box.innerHTML = html;
   box.querySelectorAll("[data-id]").forEach((b) => b.onclick = () => go("charge", b.dataset.id));
@@ -896,8 +936,9 @@ async function loadCharge(id) {
   $("cSub").textContent = `${dayName(c.start_ts)}, ${hm(c.start_ts)}${c.end_ts ? " – " + hm(c.end_ts) : " (în curs)"} · ${c.dc ? "DC" : "AC"}`;
   const cards = [
     ["Adăugat în baterie", fmt(c.battery_kwh, 1), "kWh"], ["Luat de la încărcător", fmt(c.charger_kwh, 1), "kWh"],
-    ["Baterie", c.soc_start !== null ? `${fmt(c.soc_start)} → ${fmt(c.soc_end)}%` : "–", ""], ["Durată", dur(c.duration_min), ""],
-    ["Putere maximă", fmt(c.max_kw, 1), "kW"], ["Putere medie", fmt(c.avg_kw, 1), "kW"],
+    ["Baterie", c.soc_start !== null ? `${fmt(c.soc_start)} → ${fmt(c.soc_end)}%` : "–", ""], ["Cuplată", dur(c.duration_min), ""],
+    ["Timp de încărcare", dur(c.charging_min), ""], ["Putere maximă", fmt(c.max_kw, 1), "kW"],
+    ["Putere medie", fmt(c.avg_kw, 1), "kW"],
     ["Eficiență", fmt(c.efficiency), "%"], ["Cost", c.cost === 0 ? "Gratuit" : money(c.cost, c.currency), ""]
   ];
   $("cGrid").innerHTML = cards.map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ""}</div></div>`).join("");
@@ -921,6 +962,12 @@ async function loadParks() {
   box.innerHTML = j.parks.map((p) => `<div class="item static"><span class="ic park">${ICON.park}</span><span class="main"><div class="t1">${esc(p.place || "Parcată")}</div><div class="t2">${dayName(p.start_ts)}, ${hm(p.start_ts)} · ${p.hours >= 1 ? fmt(p.hours, 1) + " h" : Math.round(p.hours * 60) + " min"}${p.ongoing ? " · acum" : ""}${p.sentry ? " · Sentry" : ""}${p.charged ? " · încărcată" : ""}</div></span><span class="side"><b>${fmt(p.kwh_lost, 2)} kWh</b><span>${p.kwh_per_day !== null ? fmt(p.kwh_per_day, 2) + " kWh/zi" : ""}</span></span></div>`).join("");
 }
 
+/* Etichetele zilelor pentru graficele cu bare: ziua săptămânii pentru perioade scurte, altfel data. */
+function dayLabels(daily) {
+  const n = daily.length;
+  return daily.map((d) => { const x = new Date(d.day + "T12:00"); return n <= 10 ? x.toLocaleDateString("ro-RO", { weekday: "short" }).slice(0, 2) : String(x.getDate()); });
+}
+
 /* ---------- STATS ---------- */
 async function loadStats() {
   const j = await api(`/api/stats/${encodeURIComponent(current)}${rangeQuery()}`);
@@ -936,8 +983,7 @@ async function loadStats() {
     ["Cost încărcare", costs.length ? costs.map(([c, v]) => `${fmt(v, 2)} ${c}`).join(" + ") : "0", costs.length ? "" : "RON"]
   ];
   $("sGrid").innerHTML = cards.map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ""}</div></div>`).join("");
-  const n = j.daily.length;
-  const labels = j.daily.map((d) => { const x = new Date(d.day + "T12:00"); return n <= 10 ? x.toLocaleDateString("ro-RO", { weekday: "short" }).slice(0, 2) : String(x.getDate()); });
+  const labels = dayLabels(j.daily);
   barChart($("sDist"), labels, j.daily.map((d) => d.km), "var(--blue)", 1);
   barChart($("sCons"), labels, j.daily.map((d) => d.kwh_100km), "var(--amber)", 1);
   barChart($("sIdle"), labels, j.daily.map((d) => d.standby_kwh), "var(--violet)", 2);

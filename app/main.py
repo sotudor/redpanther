@@ -847,13 +847,18 @@ async def api_car(vin: str):
         h = analysis.health(con, vin)
         t = analysis.today(con, vin, TZ)
         drv = con.execute("SELECT * FROM drives WHERE vin=? AND end_ts IS NULL", (vin,)).fetchone()
-        chg = con.execute("SELECT * FROM charges WHERE vin=? AND end_ts IS NULL", (vin,)).fetchone()
+        chg = con.execute("SELECT * FROM charges WHERE vin=? AND end_ts IS NULL ORDER BY start_ts DESC", (vin,)).fetchone()
+        session = analysis.charge_dict(con, chg) if chg else None
         loc = con.execute("SELECT lat, lon, ts FROM telemetry_loc WHERE vin=? ORDER BY ts DESC LIMIT 1", (vin,)).fetchone()
         place = analysis.label_for(con, loc[0], loc[1]) if loc else None
         st = con.execute("SELECT has_photo FROM vehicle_settings WHERE vin=?", (vin,)).fetchone()
-    state = "driving" if drv else "charging" if chg else "parked"
+    # „charging” doar cât chiar intră energie; „plugged” când cablul e cuplat, dar încărcarea stă.
+    cs = (live["values"].get("DetailedChargeState") or {}).get("value")
+    state = ("driving" if drv else "charging" if cs in analysis.CHARGING
+             else "plugged" if cs in analysis.PLUGGED else "parked")
     return {
-        "vin": vin, "name": row["name"], "state": state, "tesla_state": row["state"],
+        "vin": vin, "name": row["name"], "state": state, "charge_state": cs, "charge_session": session,
+        "tesla_state": row["state"],
         "polled": json.loads(row["data"]) if row["data"] else None, "polled_ts": row["data_ts"],
         "live": live, "health": h, "today": t, "place": place,
         "has_photo": bool(st and st[0]),
@@ -897,7 +902,8 @@ async def api_charges(vin: str, frm: str = "", to: str = ""):
     with db() as con:
         rows = con.execute("SELECT * FROM charges WHERE vin=? AND start_ts>=? AND start_ts<? ORDER BY start_ts DESC",
                            (vin, t0, t1)).fetchall()
-        return {"from": d0, "to": d1, "charges": [analysis.charge_dict(con, r) for r in rows]}
+        return {"from": d0, "to": d1, "charges": [analysis.charge_dict(con, r) for r in rows],
+                "daily": analysis.charged_by_day(con, vin, analysis.days_between(d0, d1), TZ)}
 
 
 @app.get("/api/charge/{charge_id}")

@@ -11,8 +11,12 @@ MILES = 1.609344
 DRIVING = {"ShiftStateD", "ShiftStateR", "ShiftStateN"}
 PARKED = {"ShiftStateP"}
 CHARGING = {"DetailedChargeStateCharging", "DetailedChargeStateStarting"}
-CHARGE_END = {"DetailedChargeStateComplete", "DetailedChargeStateStopped",
-              "DetailedChargeStateDisconnected", "DetailedChargeStateNoPower"}
+# O încărcare = de la cuplarea cablului până la decuplare, ca în aplicația Tesla,
+# chiar dacă între timp încărcarea se oprește și pornește de mai multe ori.
+PLUGGED = {"DetailedChargeStateNoPower", "DetailedChargeStateStarting", "DetailedChargeStateCharging",
+           "DetailedChargeStateComplete", "DetailedChargeStateStopped"}
+UNPLUGGED = {"DetailedChargeStateDisconnected"}
+CHARGES_VERSION = "2"   # la schimbarea regulii, încărcările vechi se recalculează o dată
 SENTRY_OFF = {"SentryModeStateOff", "SentryModeStateUnknown"}
 STALE_SECONDS = 30 * 60
 DEFAULT_KWH = 75.0
@@ -47,8 +51,12 @@ def init_db(con):
         CREATE TABLE IF NOT EXISTS vehicle_settings (
             vin TEXT PRIMARY KEY, nominal_kwh REAL, has_photo INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS analysis_meta (k TEXT PRIMARY KEY, v TEXT);
         """
     )
+    cols = {r[1] for r in con.execute("PRAGMA table_info(charges)")}
+    if "charge_seconds" not in cols:
+        con.execute("ALTER TABLE charges ADD COLUMN charge_seconds REAL")
 
 
 # ---------- citirea seriilor ----------
@@ -95,8 +103,52 @@ def last_data_ts(con, vin):
     return r[0] if r and r[0] else None
 
 
-def segments(con, vin, field, start_set, end_set, since):
-    """Intervale [start, end) în care un câmp de tip enum stă în `start_set`."""
+def counter_increments(con, vin, field, t0, t1):
+    """Creșterile unui contor de energie (ex. ACChargingEnergyIn) în [t0, t1], ca listă (ts, kWh).
+    Contorul poate porni de la zero la o nouă sesiune; o scădere înseamnă că s-a resetat."""
+    r = con.execute("SELECT value FROM telemetry_log WHERE vin=? AND field=? AND ts<? ORDER BY ts DESC LIMIT 1",
+                    (vin, field, t0)).fetchone()
+    prev = r[0] if r else None
+    out = []
+    for ts, v in series(con, vin, field, t0, t1):
+        if prev is not None:
+            d = v - prev if v >= prev else v
+            if d > 0:
+                out.append((ts, d))
+        prev = v
+    return out
+
+
+def energy_increments(con, vin, t0, t1):
+    """Energia luată de la încărcător în [t0, t1], ca (ts, kWh). Dacă mașina nu a trimis
+    contoarele de energie, folosește creșterile energiei din baterie."""
+    ac = counter_increments(con, vin, "ACChargingEnergyIn", t0, t1)
+    dc = counter_increments(con, vin, "DCChargingEnergyIn", t0, t1)
+    best = max((ac, dc), key=lambda inc: sum(d for _, d in inc))
+    if best:
+        return best
+    pts = series(con, vin, "EnergyRemaining", t0, t1)
+    return [(b[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]) if b[1] > a[1]]
+
+
+def state_seconds(con, vin, field, states, t0, t1):
+    """Câte secunde din [t0, t1] a stat un câmp de tip enum într-una din stările date."""
+    r = con.execute("SELECT value FROM telemetry_events WHERE vin=? AND field=? AND ts<=? ORDER BY ts DESC LIMIT 1",
+                    (vin, field, t0)).fetchone()
+    cur_in, cur_ts, total = bool(r and r[0] in states), t0, 0.0
+    for ts, v in con.execute("SELECT ts, value FROM telemetry_events WHERE vin=? AND field=? AND ts>? AND ts<=? "
+                             "ORDER BY ts", (vin, field, t0, t1)):
+        if cur_in:
+            total += ts - cur_ts
+        cur_in, cur_ts = v in states, ts
+    if cur_in:
+        total += t1 - cur_ts
+    return total
+
+
+def segments(con, vin, field, start_set, end_set, since, close_stale=True):
+    """Intervale [start, end) în care un câmp de tip enum stă în `start_set`.
+    Cu `close_stale`, un interval fără date de peste 30 de minute se consideră încheiat."""
     prev = con.execute(
         "SELECT value FROM telemetry_events WHERE vin=? AND field=? AND ts<? ORDER BY ts DESC LIMIT 1",
         (vin, field, since),
@@ -114,7 +166,7 @@ def segments(con, vin, field, start_set, end_set, since):
             cur = None
     if cur is not None:
         last = last_data_ts(con, vin) or cur
-        if time.time() - last > STALE_SECONDS:
+        if close_stale and time.time() - last > STALE_SECONDS:
             out.append((cur, max(last, cur)))
         else:
             out.append((cur, None))
@@ -170,34 +222,7 @@ def analyze(con, vin, days=2):
         if r[1] not in produced:
             con.execute("DELETE FROM drives WHERE id=?", (r[0],))
 
-    # încărcări
-    produced = set()
-    for t0, t1 in segments(con, vin, "DetailedChargeState", CHARGING, CHARGE_END, since):
-        te = t1 or now
-        se, ee = value_at(con, vin, "EnergyRemaining", t0), value_at(con, vin, "EnergyRemaining", te)
-        e_in = max(agg(con, "MAX", vin, "ACChargingEnergyIn", t0, te) or 0,
-                   agg(con, "MAX", vin, "DCChargingEnergyIn", t0, te) or 0)
-        gain = (ee - se) if se is not None and ee is not None else 0
-        if t1 is not None and te - t0 < 120 and gain < 0.2 and e_in < 0.2:
-            continue
-        dc_power = agg(con, "MAX", vin, "DCChargingPower", t0, te) or 0
-        ac_power = agg(con, "MAX", vin, "ACChargingPower", t0, te) or 0
-        fast = agg(con, "MAX", vin, "FastChargerPresent", t0, te) or 0
-        la, lo = loc_at(con, vin, t0)
-        con.execute(
-            """INSERT INTO charges (vin, start_ts, end_ts, start_soc, end_soc, start_energy, end_energy,
-               energy_in, max_power, dc, lat, lon) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(vin, start_ts) DO UPDATE SET end_ts=excluded.end_ts, start_soc=excluded.start_soc,
-               end_soc=excluded.end_soc, start_energy=excluded.start_energy, end_energy=excluded.end_energy,
-               energy_in=excluded.energy_in, max_power=excluded.max_power, dc=excluded.dc,
-               lat=excluded.lat, lon=excluded.lon""",
-            (vin, t0, t1, value_at(con, vin, "Soc", t0), value_at(con, vin, "Soc", te), se, ee,
-             e_in or None, max(dc_power, ac_power) or None, 1 if (dc_power > 1 or fast >= 1) else 0, la, lo),
-        )
-        produced.add(t0)
-    for r in con.execute("SELECT id, start_ts FROM charges WHERE vin=? AND start_ts>=?", (vin, since)).fetchall():
-        if r[1] not in produced:
-            con.execute("DELETE FROM charges WHERE id=?", (r[0],))
+    analyze_charges(con, vin, since, now)
 
     # capacitatea estimată a bateriei (pentru „battery health”)
     es = series(con, vin, "EnergyRemaining", now - 86400, now)
@@ -218,11 +243,90 @@ def analyze(con, vin, days=2):
         )
 
 
+def analyze_charges(con, vin, since, now):
+    """Încărcările = intervalele în care cablul e cuplat. Un interval cu cablul încă în priză
+    rămâne „în curs” chiar dacă mașina doarme: la decuplare se trezește și trimite starea."""
+    # Dacă `since` cade în mijlocul unei încărcări deja salvate, o recalculăm de la început.
+    r = con.execute("SELECT MIN(start_ts) FROM charges WHERE vin=? AND (end_ts IS NULL OR end_ts>=?)",
+                    (vin, since)).fetchone()
+    if r[0] is not None:
+        since = min(since, r[0] - 1)
+    produced = set()
+    for t0, t1 in segments(con, vin, "DetailedChargeState", PLUGGED, UNPLUGGED, since, close_stale=False):
+        te = t1 or now
+        se, ee = value_at(con, vin, "EnergyRemaining", t0), value_at(con, vin, "EnergyRemaining", te)
+        e_in = sum(d for _, d in energy_increments(con, vin, t0, te))
+        gain = (ee - se) if se is not None and ee is not None else 0
+        if t1 is not None and gain < 0.2 and e_in < 0.2:
+            continue   # cuplată, dar fără energie adăugată (ex. încărcare programată care n-a pornit)
+        dc_power = agg(con, "MAX", vin, "DCChargingPower", t0, te) or 0
+        ac_power = agg(con, "MAX", vin, "ACChargingPower", t0, te) or 0
+        fast = agg(con, "MAX", vin, "FastChargerPresent", t0, te) or 0
+        la, lo = loc_at(con, vin, t0)
+        con.execute(
+            """INSERT INTO charges (vin, start_ts, end_ts, start_soc, end_soc, start_energy, end_energy,
+               energy_in, max_power, dc, lat, lon, charge_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(vin, start_ts) DO UPDATE SET end_ts=excluded.end_ts, start_soc=excluded.start_soc,
+               end_soc=excluded.end_soc, start_energy=excluded.start_energy, end_energy=excluded.end_energy,
+               energy_in=excluded.energy_in, max_power=excluded.max_power, dc=excluded.dc,
+               lat=excluded.lat, lon=excluded.lon, charge_seconds=excluded.charge_seconds""",
+            (vin, t0, t1, value_at(con, vin, "Soc", t0), value_at(con, vin, "Soc", te), se, ee,
+             e_in or None, max(dc_power, ac_power) or None, 1 if (dc_power > 1 or fast >= 1) else 0, la, lo,
+             state_seconds(con, vin, "DetailedChargeState", CHARGING, t0, te)),
+        )
+        produced.add(t0)
+    stale = [r for r in con.execute(
+        "SELECT id, start_ts, manual_cost, manual_currency FROM charges WHERE vin=? AND start_ts>=?", (vin, since))
+        if r[1] not in produced]
+    for r in stale:
+        con.execute("DELETE FROM charges WHERE id=?", (r[0],))
+    for r in stale:
+        if r[2] is not None:
+            # Costul introdus manual pe o bucată veche trece pe încărcarea care o cuprinde acum.
+            target = con.execute(
+                "SELECT id FROM charges WHERE vin=? AND start_ts<=? AND (end_ts IS NULL OR end_ts>=?) "
+                "AND manual_cost IS NULL ORDER BY start_ts DESC LIMIT 1", (vin, r[1], r[1])).fetchone()
+            if target:
+                con.execute("UPDATE charges SET manual_cost=?, manual_currency=? WHERE id=?", (r[2], r[3], target[0]))
+
+
+def charged_by_day(con, vin, days, tz):
+    """Energia luată de la încărcător în fiecare zi din `days`, după momentul în care a intrat,
+    deci o încărcare peste noapte se împarte corect între cele două zile."""
+    t0, _ = day_bounds(days[0], days[0], tz)
+    _, t1 = day_bounds(days[-1], days[-1], tz)
+    per = {k: 0.0 for k in days}
+    for c in con.execute("SELECT start_ts, end_ts FROM charges WHERE vin=? AND start_ts<? AND "
+                         "(end_ts IS NULL OR end_ts>?)", (vin, t1, t0)).fetchall():
+        a, b = max(c[0], t0), min(c[1] or time.time(), t1)
+        for ts, kwh in energy_increments(con, vin, a, b):
+            k = datetime.fromtimestamp(ts, tz).date().isoformat()
+            if k in per:
+                per[k] += kwh
+    return [{"day": k, "kwh": round(per[k], 2)} for k in days]
+
+
+def days_between(day_from: str, day_to: str):
+    out, d = [], datetime.fromisoformat(day_from).date()
+    while d <= datetime.fromisoformat(day_to).date():
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
 def analyze_all(db, days=2):
     with db() as con:
         vins = [r[0] for r in con.execute("SELECT DISTINCT vin FROM telemetry_events")]
+        redo = (con.execute("SELECT v FROM analysis_meta WHERE k='charges_version'").fetchone() or [None])[0] != CHARGES_VERSION
         for vin in vins:
+            if redo:
+                # Regula încărcărilor s-a schimbat: recalculăm tot istoricul o singură dată.
+                analyze_charges(con, vin, 0, time.time())
             analyze(con, vin, days)
+        if redo:
+            con.execute("INSERT INTO analysis_meta VALUES ('charges_version', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                        (CHARGES_VERSION,))
+            print(f"analiza: încărcările recalculate după regula nouă (v{CHARGES_VERSION})", flush=True)
 
 
 # ---------- locuri și adrese ----------
@@ -355,10 +459,13 @@ def charge_dict(con, c):
     gain = (c["end_energy"] - c["start_energy"]) if c["start_energy"] is not None and c["end_energy"] is not None else None
     e_in = c["energy_in"]
     cost, cur, site = charge_cost(con, c)
-    hours = max(end - c["start_ts"], 1) / 3600
+    # Puterea medie se raportează la timpul în care chiar s-a încărcat, nu la cât a stat cuplată.
+    secs = c["charge_seconds"] if c["charge_seconds"] else end - c["start_ts"]
+    hours = max(secs, 1) / 3600
     return {
         "id": c["id"], "start_ts": c["start_ts"], "end_ts": c["end_ts"], "ongoing": c["end_ts"] is None,
         "duration_min": round((end - c["start_ts"]) / 60),
+        "charging_min": round(c["charge_seconds"] / 60) if c["charge_seconds"] else None,
         "soc_start": c["start_soc"], "soc_end": c["end_soc"],
         "battery_kwh": round(gain, 2) if gain is not None else None,
         "charger_kwh": round(e_in, 2) if e_in else None,
@@ -422,12 +529,8 @@ def day_bounds(day_from: str, day_to: str, tz):
 
 def stats(con, vin, day_from, day_to, tz):
     t0, t1 = day_bounds(day_from, day_to, tz)
-    days = []
-    d = datetime.fromisoformat(day_from).date()
-    while d <= datetime.fromisoformat(day_to).date():
-        days.append(d.isoformat())
-        d += timedelta(days=1)
-    per = {k: {"day": k, "km": 0.0, "kwh": 0.0, "km_e": 0.0, "standby_kwh": 0.0} for k in days}
+    days = days_between(day_from, day_to)
+    per ={k: {"day": k, "km": 0.0, "kwh": 0.0, "km_e": 0.0, "standby_kwh": 0.0} for k in days}
 
     def day_of(ts):
         return datetime.fromtimestamp(ts, tz).date().isoformat()

@@ -10,7 +10,7 @@ O aplicație personală, găzduită de tine, pentru mașinile Tesla: drumuri cu 
 
 - **Car**: bateria și autonomia, limita de încărcare, temperatura bateriei în ultimele 2 ore, energia rămasă în ultimele 6 ore (verde când crește, roșu când scade), echilibrul celulelor, presiunea în fiecare roată, temperaturile motoarelor, sănătatea estimată a bateriei (din energia reală în kWh, comparată cu pragul de 70% din garanție) și poza mașinii, încărcată de tine.
 - **Drives**: fiecare drum, cu traseul pe hartă, distanța, durata, energia, consumul, autonomia folosită și viteza.
-- **Charging**: fiecare încărcare, cu graficele puterii, temperaturii bateriei și nivelului bateriei, eficiența încărcării și costul (acasă 0, Supercharger din facturile Tesla, alte rețele introduse manual).
+- **Charging**: fiecare încărcare, de la cuplarea cablului până la decuplare (ca în aplicația Tesla, chiar dacă între timp încărcarea se oprește și pornește), cu timpul efectiv de încărcare, graficele puterii, temperaturii bateriei și nivelului bateriei, eficiența încărcării, costul (acasă 0, Supercharger din facturile Tesla, alte rețele introduse manual) și un grafic cu energia încărcată în fiecare zi.
 - **Parked**: energia pierdută cât mașina stă parcată, inclusiv cu Sentry.
 - **Stats**: totaluri și grafice pe 7, 30, 90 de zile sau pe un interval ales.
 - **Mai multe mașini și conturi Tesla** în aceeași aplicație.
