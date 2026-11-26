@@ -17,6 +17,7 @@ PLUGGED = {"DetailedChargeStateNoPower", "DetailedChargeStateStarting", "Detaile
            "DetailedChargeStateComplete", "DetailedChargeStateStopped"}
 UNPLUGGED = {"DetailedChargeStateDisconnected"}
 CHARGES_VERSION = "3"   # la schimbarea regulii, încărcările vechi se recalculează o dată
+DRIVES_VERSION = "2"    # la fel pentru drumuri
 SENTRY_OFF = {"SentryModeStateOff", "SentryModeStateUnknown"}
 STALE_SECONDS = 30 * 60
 DEFAULT_KWH = 75.0
@@ -148,8 +149,17 @@ def segments(con, vin, field, start_set, end_set, since, close_stale=True):
         "SELECT value FROM telemetry_events WHERE vin=? AND field=? AND ts<? ORDER BY ts DESC LIMIT 1",
         (vin, field, since),
     ).fetchone()
-    cur = since if prev and prev[0] in start_set else None
-    out = []
+    if prev and prev[0] in start_set:
+        # `since` cade în mijlocul unui interval: îl luăm de la adevăratul lui început. Altfel fiecare
+        # rulare (cu alt `since`) ar crea o copie a lui care începe mai târziu, iar copiile s-ar aduna.
+        marks = ",".join("?" * len(start_set))
+        last_out = con.execute(
+            f"SELECT MAX(ts) FROM telemetry_events WHERE vin=? AND field=? AND ts<? AND value NOT IN ({marks})",
+            (vin, field, since, *start_set)).fetchone()[0]
+        since = con.execute(
+            f"SELECT MIN(ts) FROM telemetry_events WHERE vin=? AND field=? AND ts>? AND ts<? AND value IN ({marks})",
+            (vin, field, last_out if last_out is not None else -1, since, *start_set)).fetchone()[0]
+    out, cur = [], None
     for ts, v in con.execute(
         "SELECT ts, value FROM telemetry_events WHERE vin=? AND field=? AND ts>=? ORDER BY ts",
         (vin, field, since),
@@ -352,14 +362,26 @@ def analyze_all(db, days=2):
         # v2 (cuplare→decuplare) a schimbat ce e o încărcare: tot istoricul. v3 (energia din contorul
         # AC sau DC, după tipul încărcării) corectează doar energy_in: ultimele 30 de zile.
         redo_since = 0 if stored in (None, "1") else time.time() - 30 * 86400
+        # v2: drumurile dublate (copii care începeau la marginea ferestrei de analiză) se șterg o dată,
+        # recalculând tot istoricul: rândurile care nu mai ies din recalculare dispar.
+        redo_drives = (con.execute("SELECT v FROM analysis_meta WHERE k='drives_version'").fetchone() or [None])[0] != DRIVES_VERSION
         for vin in vins:
             if redo:
                 analyze_charges(con, vin, redo_since, time.time())
-            analyze(con, vin, days)
+            if redo_drives:
+                before = con.execute("SELECT COUNT(*) FROM drives WHERE vin=?", (vin,)).fetchone()[0]
+                analyze(con, vin, days=3650)
+                after = con.execute("SELECT COUNT(*) FROM drives WHERE vin=?", (vin,)).fetchone()[0]
+                print(f"analiza: drumurile recalculate (v{DRIVES_VERSION}): {before} → {after}", flush=True)
+            else:
+                analyze(con, vin, days)
         if redo:
             con.execute("INSERT INTO analysis_meta VALUES ('charges_version', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                         (CHARGES_VERSION,))
             print(f"analiza: încărcările recalculate după regula nouă (v{CHARGES_VERSION})", flush=True)
+        if redo_drives:
+            con.execute("INSERT INTO analysis_meta VALUES ('drives_version', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                        (DRIVES_VERSION,))
 
 
 # ---------- locuri și adrese ----------

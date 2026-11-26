@@ -151,6 +151,27 @@ class ChargeEnergyTest(unittest.TestCase):
                          [("2026-11-25", 8.0, 0.4, 0.0), ("2026-11-24", 4.0, 0.2, 6.0)])
         self.assertEqual([e["next_day"] for e in park], [None, "2026-11-25"])
 
+    def test_drive_not_duplicated_when_window_edge_passes_through_it(self):
+        """Analiza rulează la câteva minute pe ultimele 2 zile; când începutul ferestrei trecea prin
+        mijlocul unui drum, fiecare rulare lăsa în urmă o copie a lui (1.153 km într-o zi)."""
+        t = 1_800_000_000.0
+        gear = lambda ts, v: self.con.execute("INSERT INTO telemetry_events VALUES (?,?,?,?)", (VIN, ts, "Gear", v))
+        gear(t, "ShiftStateD")
+        gear(t + H, "ShiftStateP")
+        for i in range(7):
+            self.log(t + i * 600, "Odometer", 1000 + 6.2 * i)   # ~60 km în ora asta
+        real_time = analysis.time.time
+        try:
+            # înainte, în timpul și după ce marginea ferestrei (now - 2 zile) trece prin drum
+            for minute in [-30, 0, 10, 20, 30, 40, 50, 70, 90]:
+                analysis.time.time = lambda m=minute: t + 2 * 86400 + m * 60
+                analysis.analyze(self.con, VIN, days=2)
+        finally:
+            analysis.time.time = real_time
+        rows = self.con.execute("SELECT start_ts, end_ts, end_odo - start_odo FROM drives WHERE vin=?", (VIN,)).fetchall()
+        self.assertEqual([(r[0], r[1]) for r in rows], [(t, t + H)])
+        self.assertAlmostEqual(rows[0][2], 37.2)   # mile, adică ~60 km
+
     def test_unchanged_counter_falls_back_to_battery_energy(self):
         t = self.t0
         self.event(t, "DetailedChargeStateCharging")
