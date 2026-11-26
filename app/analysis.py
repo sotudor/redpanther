@@ -286,6 +286,46 @@ def analyze_charges(con, vin, since, now):
                 con.execute("UPDATE charges SET manual_cost=?, manual_currency=? WHERE id=?", (r[2], r[3], target[0]))
 
 
+def charge_entries(con, vin, d0: str, d1: str, tz):
+    """Încărcările din zilele [d0, d1], câte o intrare pentru fiecare zi în care a intrat energie:
+    o încărcare cuplată seara și încărcată noaptea are două intrări, fiecare cu energia ei.
+    Energia se împarte după creșterile contorului (aceeași regulă ca energy_in)."""
+    t0, t1 = day_bounds(d0, d1, tz)
+    rows = con.execute("SELECT * FROM charges WHERE vin=? AND start_ts<? AND (end_ts IS NULL OR end_ts>=?)",
+                       (vin, t1, t0)).fetchall()
+    day_of = lambda ts: datetime.fromtimestamp(ts, tz).date().isoformat()
+    out = []
+    for r in rows:
+        end = r["end_ts"] or time.time()
+        per = {}   # zi -> [kWh, primul moment cu energie, ultimul]
+        for ts, kwh in energy_increments(con, vin, r["start_ts"], end, r["dc"]):
+            p = per.setdefault(day_of(ts), [0.0, ts, ts])
+            p[0] += kwh
+            p[2] = ts
+        # Zilele cu doar urme de energie (ex. un minut de încărcare la cuplare) nu devin intrări separate;
+        # energia lor trece pe cea mai apropiată zi păstrată, ca totalul să rămână energy_in.
+        parts = {k: p for k, p in per.items() if p[0] >= 0.05}
+        for k, p in per.items():
+            if parts and k not in parts:
+                near = min(parts, key=lambda x: abs(date.fromisoformat(x) - date.fromisoformat(k)))
+                parts[near][0] += p[0]
+        if not parts:
+            parts = {day_of(r["start_ts"]): [sum(p[0] for p in per.values()), r["start_ts"], r["start_ts"]]}
+        keys = sorted(parts)
+        c = charge_dict(con, r)
+        for i, k in enumerate(keys):
+            if not d0 <= k <= d1:
+                continue
+            kwh, first, _ = parts[k]
+            ds, de = day_bounds(k, k, tz)
+            secs = state_seconds(con, vin, "DetailedChargeState", CHARGING, max(r["start_ts"], ds), min(end, de))
+            out.append(dict(c, day=k, kwh=round(kwh, 2), at=first, day_charging_min=round(secs / 60),
+                            start_day=day_of(r["start_ts"]), part=i + 1, parts=len(keys),
+                            next_day=keys[i + 1] if i + 1 < len(keys) else None))
+    out.sort(key=lambda e: e["at"], reverse=True)
+    return out
+
+
 def charged_split(con, vin):
     """Energia încărcată AC și DC din toate încărcările înregistrate (de la încărcător; dacă lipsește,
     cât a intrat în baterie) și momentul primei încărcări. Tesla nu trimite totalul pe viață pe tipuri."""

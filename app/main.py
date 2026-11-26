@@ -899,11 +899,8 @@ async def api_drive(drive_id: int):
 @app.get("/api/charges/{vin}")
 async def api_charges(vin: str, frm: str = "", to: str = ""):
     d0, d1 = _range(frm, to)
-    t0, t1 = analysis.day_bounds(d0, d1, TZ)
     with db() as con:
-        rows = con.execute("SELECT * FROM charges WHERE vin=? AND start_ts>=? AND start_ts<? ORDER BY start_ts DESC",
-                           (vin, t0, t1)).fetchall()
-        return {"from": d0, "to": d1, "charges": [analysis.charge_dict(con, r) for r in rows]}
+        return {"from": d0, "to": d1, "entries": analysis.charge_entries(con, vin, d0, d1, TZ)}
 
 
 @app.get("/api/charge/{charge_id}")

@@ -185,7 +185,13 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .item .ic.ac { background: color-mix(in srgb, var(--ac) 14%, transparent); color: var(--ac); }
 .item .ic.dc2 { background: color-mix(in srgb, var(--dc) 16%, transparent); color: var(--dc); }
 .item .ic.cal { background: var(--charge-soft); color: var(--charge); font-weight: 700; font-size: .95rem; }
+.item .ic.cal.drive { background: rgba(47,111,235,.12); color: var(--blue); }
 .item.empty-day { opacity: .55; }
+/* alegerea intervalului la graficele din Car (2 h / 6 h / 12 h ...) */
+.seg { display: inline-flex; gap: 2px; background: var(--surface-2); border-radius: 999px; padding: 2px; }
+.seg button { border: 0; background: none; color: var(--muted); font-size: .75rem; font-weight: 600; padding: .25rem .6rem; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.chart-foot { align-items: center; }
 .chart .hit { fill: transparent; cursor: pointer; }
 .chart .hit:hover { fill: var(--surface-2); opacity: .6; }
 
@@ -355,7 +361,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
           <div class="sub right" id="batTempSub"></div>
         </div>
         <div class="chart sm" id="batTempChart"></div>
-        <div class="chart-foot">Ultimele 2 ore</div>
+        <div class="chart-foot"><span class="seg" id="tempWin" role="group" aria-label="Intervalul graficului"></span></div>
       </div>
       <div class="card wide">
         <div class="card-head">
@@ -363,7 +369,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
           <div class="sub right" id="energySub"></div>
         </div>
         <div class="chart sm" id="energyChart"></div>
-        <div class="chart-foot"><span>Ultimele 6 ore</span><span class="legend"><i class="up"></i>crește<i class="down"></i>scade</span></div>
+        <div class="chart-foot"><span class="seg" id="energyWin" role="group" aria-label="Intervalul graficului"></span><span class="legend"><i class="up"></i>crește<i class="down"></i>scade</span></div>
       </div>
       <div class="card"><div class="k">Diferență celule</div><div class="v"><span id="cellDiff">–</span><small>mV</small></div><div class="sub" id="cellSub"></div></div>
       <div class="card"><div class="k">Consumat în viață</div><div class="v"><span id="lifetime">–</span><small>kWh</small></div></div>
@@ -422,8 +428,14 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
   <!-- DRIVES -->
   <section class="view" id="view-drives">
     <h1 class="title">Drumuri</h1>
-    <div data-period></div>
+    <div id="drPeriod"></div>
+    <div class="sum-strip" id="drSum"></div>
     <div class="list" id="driveList" style="margin-top:.5rem"></div>
+    <div class="card chart-card" id="drChartCard" hidden>
+      <div class="card-head"><h3 id="drChartTitle"></h3><span class="k" id="drChartTotal"></span></div>
+      <div class="chart" id="drChart"></div>
+      <div class="chart-foot"><span id="drChartNote"></span></div>
+    </div>
   </section>
 
   <section class="view" id="view-drive">
@@ -863,20 +875,13 @@ async function loadCar() {
 
   renderHealth(j.health);
 
-  const hist = L.history || {};
+  carLive = L;
   const tmax = lv(L, "ModuleTempMax"), tmin = lv(L, "ModuleTempMin");
   $("batTemp").textContent = fmt(tmax, 1);
   $("batTempSub").innerHTML = [tmin !== null ? `Minim ${fmt(tmin, 1)} °C` : "", lv(L, "BatteryHeaterOn") ? "Se încălzește" : ""].filter(Boolean).join("<br>");
-  lineChart($("batTempChart"), hist.ModuleTempMax, "var(--amber)", "°C", 1, 2);
-
-  const eh = hist.EnergyRemaining || [];
   $("energyLeft").textContent = fmt(lv(L, "EnergyRemaining"), 1);
-  const delta = eh.length > 1 ? eh[eh.length - 1][1] - eh[0][1] : null;
-  $("energySub").innerHTML = [
-    delta !== null && Math.abs(delta) >= 0.05 ? `<span style="color:${delta > 0 ? "var(--charge)" : "var(--accent)"};font-weight:600">${delta > 0 ? "+" : "−"}${fmt(Math.abs(delta), 1)} kWh</span> în 6 h` : "",
-    lv(L, "PackVoltage") ? `${fmt(lv(L, "PackVoltage"))} V` : ""
-  ].filter(Boolean).join("<br>");
-  trendChart($("energyChart"), eh, "kWh", 1, 2, 0.02);
+  renderTempChart();
+  renderEnergyChart();
   const bmax = lv(L, "BrickVoltageMax"), bmin = lv(L, "BrickVoltageMin");
   const diff = bmax !== null && bmin !== null ? (bmax - bmin) * 1000 : null;
   $("cellDiff").textContent = fmt(diff);
@@ -894,6 +899,43 @@ async function loadCar() {
   renderTires(L, P);
   $("motorRows").innerHTML = [["Stator față", "DiStatorTempF"], ["Stator spate", "DiStatorTempR"], ["Invertor față", "DiHeatsinkTF"], ["Invertor spate", "DiHeatsinkTR"]]
     .map(([a, k]) => `<div class="row"><span>${a}</span><span>${fmt(lv(L, k))} °C</span></div>`).join("");
+}
+
+/* Graficele de temperatură și energie din Car, cu intervalul ales (ținut minte pe telefon).
+   Serverul trimite cel mai lung interval, iar aici se taie fereastra aleasă. */
+let carLive = null;
+const WINDOWS = { temp: [2, 6, 12], energy: [6, 12, 24] };
+const chartWin = {
+  temp: WINDOWS.temp.includes(Number(store.get("rp_win_temp"))) ? Number(store.get("rp_win_temp")) : 2,
+  energy: WINDOWS.energy.includes(Number(store.get("rp_win_energy"))) ? Number(store.get("rp_win_energy")) : 6,
+};
+function lastHours(pts, hours) {
+  if (!pts || !pts.length) return [];
+  const since = pts[pts.length - 1][0] - hours * 3600;
+  let before = null;
+  const out = [];
+  for (const p of pts) if (p[0] < since) before = p; else out.push(p);
+  if (before) out.unshift([since, before[1]]);   // valoarea de la începutul ferestrei
+  return out;
+}
+function winButtons(boxId, key, redraw) {
+  const box = $(boxId);
+  box.innerHTML = WINDOWS[key].map((h) => `<button data-h="${h}" aria-pressed="${chartWin[key] === h}">${h} h</button>`).join("");
+  box.querySelectorAll("[data-h]").forEach((b) => b.onclick = () => { chartWin[key] = Number(b.dataset.h); store.set("rp_win_" + key, b.dataset.h); redraw(); });
+}
+function renderTempChart() {
+  winButtons("tempWin", "temp", renderTempChart);
+  lineChart($("batTempChart"), lastHours((carLive.history || {}).ModuleTempMax, chartWin.temp), "var(--amber)", "°C", 1, 2);
+}
+function renderEnergyChart() {
+  winButtons("energyWin", "energy", renderEnergyChart);
+  const L = carLive, h = chartWin.energy, eh = lastHours((L.history || {}).EnergyRemaining, h);
+  const delta = eh.length > 1 ? eh[eh.length - 1][1] - eh[0][1] : null;
+  $("energySub").innerHTML = [
+    delta !== null && Math.abs(delta) >= 0.05 ? `<span style="color:${delta > 0 ? "var(--charge)" : "var(--accent)"};font-weight:600">${delta > 0 ? "+" : "−"}${fmt(Math.abs(delta), 1)} kWh</span> în ${h} h` : "",
+    lv(L, "PackVoltage") ? `${fmt(lv(L, "PackVoltage"))} V` : ""
+  ].filter(Boolean).join("<br>");
+  trendChart($("energyChart"), eh, "kWh", 1, 2, 0.02);
 }
 
 /* Sănătatea bateriei: pachetul desenat (partea pierdută hașurată, reper la 70%) și evoluția în timp. */
@@ -936,22 +978,7 @@ function renderTires(L, P) {
   $("tireNote").textContent = worst ? `Recomandat ${fmt(TIRE_TARGET, 1)} bar la rece` : `Recomandat ${fmt(TIRE_TARGET, 1)} bar`;
 }
 
-/* ---------- DRIVES ---------- */
-async function loadDrives() {
-  const j = await api(`/api/drives/${encodeURIComponent(current)}${rangeQuery()}`);
-  const box = $("driveList");
-  if (!j.drives.length) { box.innerHTML = '<div class="empty-note">Niciun drum în perioada aleasă.</div>'; return; }
-  let html = "", lastDay = "";
-  for (const d of j.drives) {
-    const day = dayName(d.start_ts);
-    if (day !== lastDay) { html += `<div class="day-head">${esc(day)}</div>`; lastDay = day; }
-    const route = d.from || d.to ? `${esc(d.from || "?")} → ${esc(d.to || "?")}` : `${hm(d.start_ts)}${d.end_ts ? " – " + hm(d.end_ts) : ""}`;
-    html += `<button class="item" data-id="${d.id}"><span class="ic drive">${ICON.drive}</span><span class="main"><div class="t1">${route}</div><div class="t2">${hm(d.start_ts)} · ${dur(d.duration_min)}${d.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>${fmt(d.km, 1)} km</b><span>${d.kwh_100km !== null ? fmt(d.kwh_100km, 1) + " kWh/100km" : "–"}</span></span></button>`;
-  }
-  box.innerHTML = html;
-  box.querySelectorAll("[data-id]").forEach((b) => b.onclick = () => go("drive", b.dataset.id));
-}
-
+/* ---------- DRUM: harta și detaliile ---------- */
 let leafletReady = null;
 function leaflet() {
   if (leafletReady) return leafletReady;
@@ -1009,167 +1036,265 @@ async function loadDrive(id) {
   $("nameEnd").onclick = () => save(d.end);
 }
 
-/* ---------- CHARGING ---------- */
+/* ---------- perioada: Zi / Lună / An / Custom ---------- */
 const money = (v, c) => v === null || v === undefined ? "–" : `${fmt(v, 2)} ${c || "RON"}`;
-/* Perioada din Charging, ca la FusionSolar: Zi (implicit azi), Lună, An sau Custom, cu săgeți.
+/* Perioada din Charging și Drives, ca la FusionSolar: Zi (implicit azi), Lună, An sau Custom, cu săgeți.
    `back` ține perioada de unde s-a intrat (lună → zi, an → lună), pentru linkul de întoarcere. */
-let cp = { kind: "day", ref: new Date(), from: null, to: null, back: null };
 const MONTHS = ["ian", "feb", "mar", "apr", "mai", "iun", "iul", "aug", "sep", "oct", "noi", "dec"];
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const atNoon = (iso) => new Date(iso + "T12:00");
-function cpRange(p = cp) {
-  const r = p.ref, y = r.getFullYear(), m = r.getMonth();
-  if (p.kind === "day") return [isoDay(r), isoDay(r)];
-  if (p.kind === "month") return [isoDay(new Date(y, m, 1)), isoDay(new Date(y, m + 1, 0))];
-  if (p.kind === "year") return [`${y}-01-01`, `${y}-12-31`];
-  return [p.from, p.to];
-}
-function cpLabel(p = cp) {
-  const r = p.ref;
-  if (p.kind === "day") {
-    const d = dayName(r.getTime() / 1000);
-    return ["Azi", "Ieri"].includes(d) ? `${d}, ${r.toLocaleDateString("ro-RO", { day: "numeric", month: "long" })}` : `${d} ${r.getFullYear() !== new Date().getFullYear() ? r.getFullYear() : ""}`.trim();
-  }
-  if (p.kind === "month") return cap(r.toLocaleDateString("ro-RO", { month: "long", year: "numeric" }));
-  if (p.kind === "year") return String(r.getFullYear());
-  return "";
-}
-function cpShift(dir) {
-  const r = new Date(cp.ref);
-  if (cp.kind === "day") r.setDate(r.getDate() + dir);
-  if (cp.kind === "month") { r.setDate(1); r.setMonth(r.getMonth() + dir); }
-  if (cp.kind === "year") { r.setDate(1); r.setFullYear(r.getFullYear() + dir); }
-  return r;
-}
-function cpSet(next) { cp = next; renderChargePeriod(); loadCharges(); }
-function renderChargePeriod() {
-  const box = $("chPeriod");
-  const arrow = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-  const nextStart = cp.kind === "custom" ? null : cpRange({ ...cp, ref: cpShift(1) })[0];
-  const back = cp.back ? `<button class="uplink" id="cpBack">${arrow("m15 18-6-6 6-6")}Înapoi la ${esc(cp.back.kind === "year" ? cpLabel(cp.back) : cpLabel(cp.back).toLowerCase())}</button>` : "";
-  box.innerHTML = `<div class="period">${[["day", "Zi"], ["month", "Lună"], ["year", "An"], ["custom", "Custom"]].map(([k, l]) => `<button data-k="${k}" aria-pressed="${cp.kind === k}">${l}</button>`).join("")}</div>
-    ${cp.kind === "custom"
-      ? `<div class="dates"><label class="k">De la<input type="date" data-f value="${cp.from}"></label><label class="k">Până la<input type="date" data-t value="${cp.to}"></label></div>`
-      : `<div class="pnav"><button class="icon-btn" id="cpPrev" aria-label="Perioada anterioară">${arrow("m15 18-6-6 6-6")}</button><div class="lbl">${esc(cpLabel())}</div><button class="icon-btn" id="cpNext" aria-label="Perioada următoare" ${nextStart > isoDay(new Date()) ? "disabled" : ""}>${arrow("m9 18 6-6-6-6")}</button></div>`}
-    ${back}`;
-  box.querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
-    const k = b.dataset.k;
-    if (k === cp.kind) return;
-    if (k === "custom") { const [f, t] = cp.kind === "day" ? [isoDay(new Date(cp.ref.getTime() - 6 * 864e5)), isoDay(cp.ref)] : cpRange(); cpSet({ kind: k, ref: cp.ref, from: f, to: t > isoDay(new Date()) ? isoDay(new Date()) : t, back: null }); }
-    else cpSet({ kind: k, ref: cp.ref, from: null, to: null, back: null });
-  });
-  if (cp.kind === "custom") box.querySelectorAll("input").forEach((i) => i.onchange = () => {
-    let f = box.querySelector("[data-f]").value, t = box.querySelector("[data-t]").value;
-    if (!f || !t) return;
-    if (f > t) [f, t] = [t, f];
-    cpSet({ ...cp, from: f, to: t });
-  });
-  else {
-    $("cpPrev").onclick = () => cpSet({ ...cp, ref: cpShift(-1), back: null });
-    $("cpNext").onclick = () => cpSet({ ...cp, ref: cpShift(1), back: null });
-  }
-  if (cp.back) $("cpBack").onclick = () => cpSet(cp.back);
-}
-const drillTo = (kind, ref) => cpSet({ kind, ref, from: null, to: null, back: { ...cp } });
-
-const kwhOf = (c) => c.charger_kwh ?? c.battery_kwh ?? 0;
-const minOf = (c) => c.charging_min ?? c.duration_min ?? 0;
-const seg = (c, label) => ({ v: kwhOf(c), c: c.dc ? "var(--dc)" : "var(--ac)", t: label });
-function chargeItem(c) {
-  // Cât a stat cuplată și, dacă diferă vizibil, cât s-a încărcat efectiv.
-  const active = c.charging_min !== null && c.charging_min < c.duration_min - 5 ? ` (încărcare ${dur(c.charging_min)})` : "";
-  return `<button class="item" data-id="${c.id}"><span class="ic ${c.dc ? "dc2" : "ac"}">${ICON.charge}</span><span class="main"><div class="t1">${esc(c.place || (c.dc ? "Încărcare rapidă" : "Încărcare AC"))}</div><div class="t2">${hm(c.start_ts)} · ${dur(c.duration_min)}${active} · ${c.dc ? "DC" : "AC"}${c.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>+${fmt(kwhOf(c), 1)} kWh</b><span>${c.cost === 0 ? "gratuit" : money(c.cost, c.currency)}</span></span></button>`;
-}
-function groupItem(attrs, badge, title, list) {
-  const kwh = list.reduce((a, c) => a + kwhOf(c), 0), mins = list.reduce((a, c) => a + minOf(c), 0);
-  const dc = list.filter((c) => c.dc).length;
-  const sub = list.length ? `${list.length} ${list.length === 1 ? "încărcare" : "încărcări"}${dc ? ` (${dc} DC)` : ""} · ${dur(mins)}` : "Nicio încărcare";
-  return `<button class="item${list.length ? "" : " empty-day"}" ${attrs}><span class="ic cal">${badge}</span><span class="main"><div class="t1">${esc(title)}</div><div class="t2">${sub}</div></span><span class="side"><b>${list.length ? "+" + fmt(kwh, 1) + " kWh" : "–"}</b></span></button>`;
-}
-
-async function loadCharges() {
-  if (!$("chPeriod").firstChild) renderChargePeriod();
-  const [f, t] = cpRange();
-  const j = await api(`/api/charges/${encodeURIComponent(current)}?frm=${f}&to=${t}`);
-  const cs = j.charges.slice().sort((a, b) => a.start_ts - b.start_ts);   // cronologic, pentru grafice
-  const box = $("chargeList");
-  const keyDay = (c) => isoDay(new Date(c.start_ts * 1000));
-
-  // totalurile perioadei
-  const kwh = cs.reduce((a, c) => a + kwhOf(c), 0), mins = cs.reduce((a, c) => a + minOf(c), 0);
-  $("chSum").innerHTML = [["Energie", fmt(kwh, 1), "kWh"], ["Încărcări", fmt(cs.length), ""], ["Timp de încărcare", fmt(mins / 60, mins < 600 ? 1 : 0), "h"]]
-    .map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ""}</div></div>`).join("");
-  $("chChartTotal").textContent = kwh ? `Total ${fmt(kwh, 1)} kWh` : "";
-
-  let labels = [], stacks = [], opts = { digits: 1, unit: "kWh" };
-  if (cp.kind === "day") {
-    // O bară pe încărcare, în ora în care a început; mai multe încărcări în aceeași oră se stivuiesc.
-    labels = Array.from({ length: 24 }, (_, h) => String(h));
-    stacks = labels.map(() => []);
-    for (const c of cs) stacks[new Date(c.start_ts * 1000).getHours()].push(seg(c, `${hm(c.start_ts)} · ${c.dc ? "DC" : "AC"}: ${fmt(kwhOf(c), 1)} kWh`));
-    opts.every = 3;
-    $("chChartTitle").innerHTML = 'Energie pe încărcare <span class="k">(kWh)</span>';
-    $("chChartNote").textContent = "După ora de început";
-    box.innerHTML = cs.length ? cs.slice().reverse().map(chargeItem).join("") : '<div class="empty-note">Nicio încărcare în această zi.</div>';
-  } else if (cp.kind === "month") {
-    const days = daysOf(f, t);
-    const by = Object.fromEntries(days.map((d) => [d, []]));
-    for (const c of cs) (by[keyDay(c)] ||= []).push(c);
-    labels = days.map((d) => String(atNoon(d).getDate()));
-    stacks = days.map((d) => typeStacks(by[d]));
-    opts.onPick = (i) => drillTo("day", atNoon(days[i]));
-    $("chChartTitle").innerHTML = 'Energie încărcată pe zi <span class="k">(kWh)</span>';
-    $("chChartNote").textContent = "Apasă pe o zi pentru detalii";
-    const shown = days.filter((d) => by[d].length).reverse();
-    box.innerHTML = shown.length ? shown.map((d) => groupItem(`data-day="${d}"`, atNoon(d).getDate(), dayName(atNoon(d).getTime() / 1000), by[d])).join("") : '<div class="empty-note">Nicio încărcare în această lună.</div>';
-    box.querySelectorAll("[data-day]").forEach((b) => b.onclick = () => drillTo("day", atNoon(b.dataset.day)));
-  } else if (cp.kind === "year") {
-    const y = cp.ref.getFullYear();
-    const by = Array.from({ length: 12 }, () => []);
-    for (const c of cs) by[new Date(c.start_ts * 1000).getMonth()].push(c);
-    labels = MONTHS.slice();
-    stacks = by.map(typeStacks);
-    opts.every = 1;
-    opts.onPick = (i) => drillTo("month", new Date(y, i, 1, 12));
-    $("chChartTitle").innerHTML = 'Energie încărcată pe lună <span class="k">(kWh)</span>';
-    $("chChartNote").textContent = "Apasă pe o lună pentru detalii";
-    // toate lunile până la cea curentă (sau tot anul, dacă e unul trecut), cea mai recentă sus
-    const last = y < new Date().getFullYear() ? 11 : y > new Date().getFullYear() ? -1 : new Date().getMonth();
-    const ms = Array.from({ length: last + 1 }, (_, m) => m).reverse();
-    box.innerHTML = ms.length ? ms.map((m) => groupItem(`data-month="${m}"`, MONTHS[m], cap(new Date(y, m, 1).toLocaleDateString("ro-RO", { month: "long" })), by[m])).join("") : '<div class="empty-note">Niciun an cu date.</div>';
-    box.querySelectorAll("[data-month]").forEach((b) => b.onclick = () => drillTo("month", new Date(y, Number(b.dataset.month), 1, 12)));
-  } else {
-    const days = daysOf(f, t);
-    const by = Object.fromEntries(days.map((d) => [d, []]));
-    for (const c of cs) (by[keyDay(c)] ||= []).push(c);
-    labels = dayLabels(days.map((day) => ({ day })));
-    stacks = days.map((d) => typeStacks(by[d]));
-    opts.onPick = (i) => drillTo("day", atNoon(days[i]));
-    $("chChartTitle").innerHTML = 'Energie încărcată pe zi <span class="k">(kWh)</span>';
-    $("chChartNote").textContent = `${atNoon(f).toLocaleDateString("ro-RO", { day: "numeric", month: "short" })} – ${atNoon(t).toLocaleDateString("ro-RO", { day: "numeric", month: "short", year: "numeric" })}`;
-    let html = "", lastDay = "";
-    for (const c of cs.slice().reverse()) {
-      const day = dayName(c.start_ts);
-      if (day !== lastDay) { html += `<div class="day-head">${esc(day)}</div>`; lastDay = day; }
-      html += chargeItem(c);
-    }
-    box.innerHTML = html || '<div class="empty-note">Nicio încărcare în perioada aleasă.</div>';
-  }
-  box.querySelectorAll("[data-id]").forEach((b) => b.onclick = () => go("charge", b.dataset.id));
-  stackChart($("chChart"), labels, stacks, opts);
-
-  const ac = cs.filter((c) => !c.dc).reduce((a, c) => a + kwhOf(c), 0), dc = cs.filter((c) => c.dc).reduce((a, c) => a + kwhOf(c), 0);
-  donut3d($("chSplit"), ac, dc, "Nicio încărcare în perioada aleasă.");
-}
-/* Suma pe AC și pe DC a unui grup de încărcări, ca segmente de bară. */
-function typeStacks(list) {
-  const ac = list.filter((c) => !c.dc).reduce((a, c) => a + kwhOf(c), 0), dc = list.filter((c) => c.dc).reduce((a, c) => a + kwhOf(c), 0);
-  return [{ v: ac, c: "var(--ac)", t: `AC: ${fmt(ac, 1)} kWh` }, { v: dc, c: "var(--dc)", t: `DC: ${fmt(dc, 1)} kWh` }];
-}
+const ddmm = (d) => d.toLocaleDateString("ro-RO", { day: "2-digit", month: "2-digit" });
 function daysOf(f, t) {
   const out = [];
   for (let d = atNoon(f); isoDay(d) <= t; d.setDate(d.getDate() + 1)) out.push(isoDay(d));
   return out;
+}
+function makePeriod(boxId, onChange) {
+  const P = { s: { kind: "day", ref: new Date(), from: null, to: null, back: null, live: true } };
+  P.range = (s = P.s) => {
+    const r = s.ref, y = r.getFullYear(), m = r.getMonth();
+    if (s.kind === "day") return [isoDay(r), isoDay(r)];
+    if (s.kind === "month") return [isoDay(new Date(y, m, 1)), isoDay(new Date(y, m + 1, 0))];
+    if (s.kind === "year") return [`${y}-01-01`, `${y}-12-31`];
+    return [s.from, s.to];
+  };
+  P.label = (s = P.s) => {
+    const r = s.ref;
+    if (s.kind === "day") {
+      const d = dayName(r.getTime() / 1000);
+      return ["Azi", "Ieri"].includes(d) ? `${d}, ${r.toLocaleDateString("ro-RO", { day: "numeric", month: "long" })}` : `${d} ${r.getFullYear() !== new Date().getFullYear() ? r.getFullYear() : ""}`.trim();
+    }
+    if (s.kind === "month") return cap(r.toLocaleDateString("ro-RO", { month: "long", year: "numeric" }));
+    if (s.kind === "year") return String(r.getFullYear());
+    return "";
+  };
+  P.shift = (dir) => {
+    const r = new Date(P.s.ref);
+    if (P.s.kind === "day") r.setDate(r.getDate() + dir);
+    if (P.s.kind === "month") { r.setDate(1); r.setMonth(r.getMonth() + dir); }
+    if (P.s.kind === "year") { r.setDate(1); r.setFullYear(r.getFullYear() + dir); }
+    return r;
+  };
+  // „live” = perioada curentă: dacă aplicația rămâne deschisă peste noapte, trece singură pe ziua nouă.
+  const isLive = (s) => { if (s.kind === "custom") return false; const [a, b] = P.range(s), t = isoDay(new Date()); return a <= t && t <= b; };
+  P.sync = () => { if (P.s.live && !isLive(P.s)) { P.s = { ...P.s, ref: new Date() }; P.render(); } };
+  P.set = (next) => { P.s = { ...next, live: isLive(next) }; P.render(); onChange(); };
+  P.drill = (kind, ref) => P.set({ kind, ref, from: null, to: null, back: { ...P.s } });
+  P.render = () => {
+    const box = $(boxId), s = P.s;
+    const arrow = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+    const nextStart = s.kind === "custom" ? null : P.range({ ...s, ref: P.shift(1) })[0];
+    const back = s.back ? `<button class="uplink" data-up>${arrow("m15 18-6-6 6-6")}Înapoi la ${esc(s.back.kind === "year" ? P.label(s.back) : P.label(s.back).toLowerCase())}</button>` : "";
+    box.innerHTML = `<div class="period">${[["day", "Zi"], ["month", "Lună"], ["year", "An"], ["custom", "Custom"]].map(([k, l]) => `<button data-k="${k}" aria-pressed="${s.kind === k}">${l}</button>`).join("")}</div>
+      ${s.kind === "custom"
+        ? `<div class="dates"><label class="k">De la<input type="date" data-f value="${s.from}"></label><label class="k">Până la<input type="date" data-t value="${s.to}"></label></div>`
+        : `<div class="pnav"><button class="icon-btn" data-prev aria-label="Perioada anterioară">${arrow("m15 18-6-6 6-6")}</button><div class="lbl">${esc(P.label())}</div><button class="icon-btn" data-next aria-label="Perioada următoare" ${nextStart > isoDay(new Date()) ? "disabled" : ""}>${arrow("m9 18 6-6-6-6")}</button></div>`}
+      ${back}`;
+    box.querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
+      const k = b.dataset.k, today = isoDay(new Date());
+      if (k === s.kind) return;
+      if (k === "custom") {
+        const [f, t] = s.kind === "day" ? [isoDay(new Date(s.ref.getTime() - 6 * 864e5)), isoDay(s.ref)] : P.range();
+        P.set({ kind: k, ref: s.ref, from: f, to: t > today ? today : t, back: null });
+      } else P.set({ kind: k, ref: s.ref, from: null, to: null, back: null });
+    });
+    if (s.kind === "custom") box.querySelectorAll("input").forEach((i) => i.onchange = () => {
+      let f = box.querySelector("[data-f]").value, t = box.querySelector("[data-t]").value;
+      if (!f || !t) return;
+      if (f > t) [f, t] = [t, f];
+      P.set({ ...s, from: f, to: t });
+    });
+    else {
+      box.querySelector("[data-prev]").onclick = () => P.set({ ...s, ref: P.shift(-1), back: null });
+      box.querySelector("[data-next]").onclick = () => P.set({ ...s, ref: P.shift(1), back: null });
+    }
+    if (s.back) box.querySelector("[data-up]").onclick = () => P.set(s.back);
+  };
+  return P;
+}
+const sumStrip = (cards) => cards.map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ""}</div></div>`).join("");
+function groupItem(attrs, badge, title, sub, side, empty, badgeCls = "") {
+  return `<button class="item${empty ? " empty-day" : ""}" ${attrs}><span class="ic cal ${badgeCls}">${badge}</span><span class="main"><div class="t1">${esc(title)}</div><div class="t2">${sub}</div></span><span class="side"><b>${side}</b></span></button>`;
+}
+/* Grupează intrările pe zi (lună, custom) sau pe lună (an); `keyOf` dă ziua ISO a unei intrări. */
+function groupBy(kind, f, t, list, keyOf) {
+  if (kind === "year") {
+    const by = Array.from({ length: 12 }, () => []);
+    for (const x of list) by[atNoon(keyOf(x)).getMonth()].push(x);
+    return by;
+  }
+  const by = Object.fromEntries(daysOf(f, t).map((d) => [d, []]));
+  for (const x of list) (by[keyOf(x)] ||= []).push(x);
+  return by;
+}
+/* Lista de luni pentru An: toate lunile până la cea curentă (sau tot anul, dacă e unul trecut), cea mai recentă sus. */
+function yearMonths(y) {
+  const now = new Date(), last = y < now.getFullYear() ? 11 : y > now.getFullYear() ? -1 : now.getMonth();
+  return Array.from({ length: last + 1 }, (_, m) => m).reverse();
+}
+const monthName = (y, m) => cap(new Date(y, m, 1).toLocaleDateString("ro-RO", { month: "long" }));
+const rangeNote = (f, t) => `${atNoon(f).toLocaleDateString("ro-RO", { day: "numeric", month: "short" })} – ${atNoon(t).toLocaleDateString("ro-RO", { day: "numeric", month: "short", year: "numeric" })}`;
+
+/* ---------- CHARGING ---------- */
+const CP = makePeriod("chPeriod", () => loadCharges());
+// O intrare = partea unei încărcări dintr-o zi (o încărcare peste noapte are două intrări).
+const kwhOf = (e) => e.kwh || 0;
+const minOf = (e) => e.day_charging_min || 0;
+function chargeItem(e) {
+  const type = `${e.dc ? "DC" : "AC"}${e.ongoing ? " · în curs" : ""}`;
+  let line, note = "";
+  if (e.parts === 1 && e.day === e.start_day) {
+    // Cât a stat cuplată și, dacă diferă vizibil, cât s-a încărcat efectiv.
+    const active = e.charging_min !== null && e.charging_min < e.duration_min - 5 ? ` (încărcare ${dur(e.charging_min)})` : "";
+    line = `${hm(e.start_ts)} · ${dur(e.duration_min)}${active}`;
+  } else {
+    // Partea dintr-o zi a unei încărcări care se întinde pe mai multe zile: timpul de încărcare din ziua
+    // respectivă, iar pe al doilea rând de când e cuplată și în ce zi continuă.
+    line = `${hm(e.day === e.start_day ? e.start_ts : e.at)} · încărcare ${dur(e.day_charging_min)}`;
+    note = [e.day !== e.start_day ? `cuplată din ${ddmm(new Date(e.start_ts * 1000))}, ${hm(e.start_ts)}` : "",
+            e.next_day ? `continuă pe ${ddmm(atNoon(e.next_day))}` : ""].filter(Boolean).join(" · ");
+  }
+  // Costul e al întregii încărcări, deci apare doar pe prima ei intrare.
+  const cost = e.part !== 1 ? "" : e.cost === 0 ? "gratuit" : money(e.cost, e.currency);
+  return `<button class="item" data-id="${e.id}"><span class="ic ${e.dc ? "dc2" : "ac"}">${ICON.charge}</span><span class="main"><div class="t1">${esc(e.place || (e.dc ? "Încărcare rapidă" : "Încărcare AC"))}</div><div class="t2">${line} · ${type}</div>${note ? `<div class="t2">${note}</div>` : ""}</span><span class="side"><b>+${fmt(kwhOf(e), 1)} kWh</b><span>${cost}</span></span></button>`;
+}
+function chargeGroup(attrs, badge, title, list) {
+  const kwh = list.reduce((a, c) => a + kwhOf(c), 0), mins = list.reduce((a, c) => a + minOf(c), 0), dc = list.filter((c) => c.dc).length;
+  const sub = list.length ? `${list.length} ${list.length === 1 ? "încărcare" : "încărcări"}${dc ? ` (${dc} DC)` : ""} · ${dur(mins)}` : "Nicio încărcare";
+  return groupItem(attrs, badge, title, sub, list.length ? "+" + fmt(kwh, 1) + " kWh" : "–", !list.length);
+}
+/* Suma pe AC și pe DC a unui grup de intrări, ca segmente de bară. */
+function typeStacks(list) {
+  const ac = list.filter((c) => !c.dc).reduce((a, c) => a + kwhOf(c), 0), dc = list.filter((c) => c.dc).reduce((a, c) => a + kwhOf(c), 0);
+  return [{ v: ac, c: "var(--ac)", t: `AC: ${fmt(ac, 1)} kWh` }, { v: dc, c: "var(--dc)", t: `DC: ${fmt(dc, 1)} kWh` }];
+}
+
+async function loadCharges() {
+  CP.sync();
+  if (!$("chPeriod").firstChild) CP.render();
+  const s = CP.s, [f, t] = CP.range();
+  const j = await api(`/api/charges/${encodeURIComponent(current)}?frm=${f}&to=${t}`);
+  const es = j.entries;   // cea mai recentă prima
+  const box = $("chargeList"), keyOf = (e) => e.day;
+
+  const kwh = es.reduce((a, e) => a + kwhOf(e), 0), mins = es.reduce((a, e) => a + minOf(e), 0);
+  const count = new Set(es.map((e) => e.id)).size;
+  $("chSum").innerHTML = sumStrip([["Energie", fmt(kwh, 1), "kWh"], ["Încărcări", fmt(count), ""], ["Timp de încărcare", fmt(mins / 60, mins < 600 ? 1 : 0), "h"]]);
+  $("chChartTotal").textContent = kwh ? `Total ${fmt(kwh, 1)} kWh` : "";
+
+  let labels = [], stacks = [], opts = { digits: 1, unit: "kWh" };
+  if (s.kind === "day") {
+    // O bară pe intrare, în ora în care a început să intre energie în ziua aleasă; mai multe în aceeași oră se stivuiesc.
+    labels = Array.from({ length: 24 }, (_, h) => String(h));
+    stacks = labels.map(() => []);
+    for (const e of es.slice().reverse()) stacks[new Date(e.at * 1000).getHours()].push({ v: kwhOf(e), c: e.dc ? "var(--dc)" : "var(--ac)", t: `${hm(e.at)} · ${e.dc ? "DC" : "AC"}: ${fmt(kwhOf(e), 1)} kWh` });
+    opts.every = 3;
+    $("chChartTitle").innerHTML = 'Energie pe încărcare <span class="k">(kWh)</span>';
+    $("chChartNote").textContent = "După ora la care a început să intre energie";
+    box.innerHTML = es.length ? es.map(chargeItem).join("") : '<div class="empty-note">Nicio încărcare în această zi.</div>';
+  } else if (s.kind === "month" || s.kind === "custom") {
+    const days = daysOf(f, t), by = groupBy(s.kind, f, t, es, keyOf);
+    labels = s.kind === "month" ? days.map((d) => String(atNoon(d).getDate())) : dayLabels(days.map((day) => ({ day })));
+    stacks = days.map((d) => typeStacks(by[d]));
+    opts.onPick = (i) => CP.drill("day", atNoon(days[i]));
+    $("chChartTitle").innerHTML = 'Energie încărcată pe zi <span class="k">(kWh)</span>';
+    if (s.kind === "month") {
+      $("chChartNote").textContent = "Apasă pe o zi pentru detalii";
+      const shown = days.filter((d) => by[d].length).reverse();
+      box.innerHTML = shown.length ? shown.map((d) => chargeGroup(`data-day="${d}"`, atNoon(d).getDate(), dayName(atNoon(d).getTime() / 1000), by[d])).join("") : '<div class="empty-note">Nicio încărcare în această lună.</div>';
+      box.querySelectorAll("[data-day]").forEach((b) => b.onclick = () => CP.drill("day", atNoon(b.dataset.day)));
+    } else {
+      $("chChartNote").textContent = rangeNote(f, t);
+      let html = "";
+      for (const d of days.slice().reverse()) if (by[d].length) html += `<div class="day-head">${esc(dayName(atNoon(d).getTime() / 1000))}</div>` + by[d].map(chargeItem).join("");
+      box.innerHTML = html || '<div class="empty-note">Nicio încărcare în perioada aleasă.</div>';
+    }
+  } else {
+    const y = s.ref.getFullYear(), by = groupBy("year", f, t, es, keyOf);
+    labels = MONTHS.slice();
+    stacks = by.map(typeStacks);
+    opts.every = 1;
+    opts.onPick = (i) => CP.drill("month", new Date(y, i, 1, 12));
+    $("chChartTitle").innerHTML = 'Energie încărcată pe lună <span class="k">(kWh)</span>';
+    $("chChartNote").textContent = "Apasă pe o lună pentru detalii";
+    const ms = yearMonths(y);
+    box.innerHTML = ms.length ? ms.map((m) => chargeGroup(`data-month="${m}"`, MONTHS[m], monthName(y, m), by[m])).join("") : '<div class="empty-note">Niciun an cu date.</div>';
+    box.querySelectorAll("[data-month]").forEach((b) => b.onclick = () => CP.drill("month", new Date(y, Number(b.dataset.month), 1, 12)));
+  }
+  box.querySelectorAll("[data-id]").forEach((b) => b.onclick = () => go("charge", b.dataset.id));
+  stackChart($("chChart"), labels, stacks, opts);
+
+  const [ac, dc] = typeStacks(es).map((x) => x.v);
+  donut3d($("chSplit"), ac, dc, "Nicio încărcare în perioada aleasă.");
+}
+
+/* ---------- DRIVES ---------- */
+const DP = makePeriod("drPeriod", () => loadDrives());
+function driveItem(d) {
+  const route = d.from || d.to ? `${esc(d.from || "?")} → ${esc(d.to || "?")}` : `${hm(d.start_ts)}${d.end_ts ? " – " + hm(d.end_ts) : ""}`;
+  return `<button class="item" data-id="${d.id}"><span class="ic drive">${ICON.drive}</span><span class="main"><div class="t1">${route}</div><div class="t2">${hm(d.start_ts)} · ${dur(d.duration_min)}${d.ongoing ? " · în curs" : ""}</div></span><span class="side"><b>${fmt(d.km, 1)} km</b><span>${d.kwh_100km !== null ? fmt(d.kwh_100km, 1) + " kWh/100km" : "–"}</span></span></button>`;
+}
+const kmOf = (list) => list.reduce((a, d) => a + (d.km || 0), 0);
+/* Consumul mediu al unui grup: energia totală pe distanța totală, doar din drumurile care au ambele valori. */
+function consOf(list) {
+  const ok = list.filter((d) => d.km && d.kwh !== null && d.kwh >= 0);
+  const km = kmOf(ok);
+  return km >= 0.5 ? ok.reduce((a, d) => a + d.kwh, 0) / km * 100 : null;
+}
+function driveGroup(attrs, badge, title, list) {
+  const mins = list.reduce((a, d) => a + (d.duration_min || 0), 0), c = consOf(list);
+  const sub = list.length ? `${list.length} ${list.length === 1 ? "drum" : "drumuri"} · ${dur(mins)}${c !== null ? ` · ${fmt(c, 1)} kWh/100km` : ""}` : "Niciun drum";
+  return groupItem(attrs, badge, title, sub, list.length ? fmt(kmOf(list), kmOf(list) < 100 ? 1 : 0) + " km" : "–", !list.length, "drive");
+}
+
+async function loadDrives() {
+  DP.sync();
+  if (!$("drPeriod").firstChild) DP.render();
+  const s = DP.s, [f, t] = DP.range();
+  const j = await api(`/api/drives/${encodeURIComponent(current)}?frm=${f}&to=${t}`);
+  const ds = j.drives;   // cel mai recent primul
+  const box = $("driveList"), keyOf = (d) => isoDay(new Date(d.start_ts * 1000));
+  const mins = ds.reduce((a, d) => a + (d.duration_min || 0), 0), km = kmOf(ds);
+  $("drSum").innerHTML = sumStrip([["Distanță", fmt(km, km < 100 ? 1 : 0), "km"], ["Drumuri", fmt(ds.length), ""], ["Timp de condus", fmt(mins / 60, mins < 600 ? 1 : 0), "h"]]);
+  $("drChartTotal").textContent = km ? `Total ${fmt(km, km < 100 ? 1 : 0)} km` : "";
+  const card = $("drChartCard");
+  card.hidden = s.kind === "day";   // la o singură zi graficul nu spune nimic în plus față de listă
+
+  let labels = [], values = [], opts = { digits: 1, unit: "km" };
+  const bar = (list) => [{ v: kmOf(list), c: "var(--blue)" }];
+  if (s.kind === "day") {
+    box.innerHTML = ds.length ? ds.map(driveItem).join("") : '<div class="empty-note">Niciun drum în această zi.</div>';
+  } else if (s.kind === "month" || s.kind === "custom") {
+    const days = daysOf(f, t), by = groupBy(s.kind, f, t, ds, keyOf);
+    labels = s.kind === "month" ? days.map((d) => String(atNoon(d).getDate())) : dayLabels(days.map((day) => ({ day })));
+    values = days.map((d) => bar(by[d]));
+    opts.onPick = (i) => DP.drill("day", atNoon(days[i]));
+    $("drChartTitle").innerHTML = 'Distanța pe zi <span class="k">(km)</span>';
+    if (s.kind === "month") {
+      $("drChartNote").textContent = "Apasă pe o zi pentru detalii";
+      const shown = days.filter((d) => by[d].length).reverse();
+      box.innerHTML = shown.length ? shown.map((d) => driveGroup(`data-day="${d}"`, atNoon(d).getDate(), dayName(atNoon(d).getTime() / 1000), by[d])).join("") : '<div class="empty-note">Niciun drum în această lună.</div>';
+      box.querySelectorAll("[data-day]").forEach((b) => b.onclick = () => DP.drill("day", atNoon(b.dataset.day)));
+    } else {
+      $("drChartNote").textContent = rangeNote(f, t);
+      let html = "";
+      for (const d of days.slice().reverse()) if (by[d].length) html += `<div class="day-head">${esc(dayName(atNoon(d).getTime() / 1000))}</div>` + by[d].map(driveItem).join("");
+      box.innerHTML = html || '<div class="empty-note">Niciun drum în perioada aleasă.</div>';
+    }
+  } else {
+    const y = s.ref.getFullYear(), by = groupBy("year", f, t, ds, keyOf);
+    labels = MONTHS.slice();
+    values = by.map(bar);
+    opts.every = 1;
+    opts.onPick = (i) => DP.drill("month", new Date(y, i, 1, 12));
+    $("drChartTitle").innerHTML = 'Distanța pe lună <span class="k">(km)</span>';
+    $("drChartNote").textContent = "Apasă pe o lună pentru detalii";
+    const ms = yearMonths(y);
+    box.innerHTML = ms.length ? ms.map((m) => driveGroup(`data-month="${m}"`, MONTHS[m], monthName(y, m), by[m])).join("") : '<div class="empty-note">Niciun an cu date.</div>';
+    box.querySelectorAll("[data-month]").forEach((b) => b.onclick = () => DP.drill("month", new Date(y, Number(b.dataset.month), 1, 12)));
+  }
+  box.querySelectorAll("[data-id]").forEach((b) => b.onclick = () => go("drive", b.dataset.id));
+  if (!card.hidden) stackChart($("drChart"), labels, values, opts);
 }
 async function loadCharge(id) {
   const c = await api(`/api/charge/${id}`);

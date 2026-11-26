@@ -282,8 +282,9 @@ def live(db, vin: str) -> dict:
     }
 
 
-# Câte ore din urmă arată graficele din tab-ul Car.
-HISTORY_HOURS = {"ModuleTempMax": 2, "EnergyRemaining": 6}
+# Câte ore din urmă se trimit pentru graficele din tab-ul Car: cea mai lungă fereastră
+# dintre cele care se pot alege în aplicație (temperatura 2/6/12 h, energia 6/12/24 h).
+HISTORY_HOURS = {"ModuleTempMax": 12, "EnergyRemaining": 24}
 
 
 def history(con, vin: str, field: str, hours: float) -> list:

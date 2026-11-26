@@ -106,6 +106,36 @@ class ChargeEnergyTest(unittest.TestCase):
         self.assertTrue(c["dc"])
         self.assertAlmostEqual(c["energy_in"], 30.0, places=2)
 
+    def plugged_overnight(self, evening_kwh):
+        """Cuplată pe 24.11 la 15:35, decuplată pe 25.11 la 12:50 (cazul real al încărcării 399)."""
+        from datetime import datetime, timezone
+        ts = lambda d, h, m: datetime(2026, 11, d, h, m, tzinfo=timezone.utc).timestamp()
+        self.event(ts(24, 15, 35), "DetailedChargeStateCharging")
+        self.log(ts(24, 15, 35), "ACChargingEnergyIn", 0.0)
+        self.log(ts(24, 15, 36), "ACChargingEnergyIn", evening_kwh)
+        self.event(ts(24, 15, 36), "DetailedChargeStateStopped")
+        self.event(ts(25, 4, 55), "DetailedChargeStateCharging")
+        for i in range(8):   # 04:55 → 11:55, 0,6 kWh pe oră
+            self.log(ts(25, 4, 55) + i * H, "ACChargingEnergyIn", evening_kwh + 0.6 * (i + 1))
+        self.event(ts(25, 12, 37), "DetailedChargeStateStopped")
+        self.event(ts(25, 12, 50), "DetailedChargeStateDisconnected")
+        self.charges()
+        return analysis.charge_entries(self.con, VIN, "2026-11-24", "2026-11-25", timezone.utc)
+
+    def test_energy_counted_on_the_day_it_entered(self):
+        entries = self.plugged_overnight(0.01)   # pe 24 doar urme de energie
+        self.assertEqual([(e["day"], e["kwh"]) for e in entries], [("2026-11-25", 4.81)])
+        self.assertEqual(entries[0]["start_day"], "2026-11-24")
+        self.assertEqual(entries[0]["parts"], 1)
+
+    def test_charge_over_two_days_has_two_entries(self):
+        entries = self.plugged_overnight(1.5)
+        self.assertEqual([(e["day"], e["kwh"]) for e in entries], [("2026-11-25", 4.8), ("2026-11-24", 1.5)])
+        self.assertEqual([(e["part"], e["parts"], e["next_day"]) for e in entries],
+                         [(2, 2, None), (1, 2, "2026-11-25")])
+        self.assertEqual(entries[0]["day_charging_min"], 462)   # 04:55 → 12:37
+        self.assertEqual(entries[1]["day_charging_min"], 1)
+
     def test_unchanged_counter_falls_back_to_battery_energy(self):
         t = self.t0
         self.event(t, "DetailedChargeStateCharging")
