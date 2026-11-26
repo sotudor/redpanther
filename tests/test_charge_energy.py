@@ -136,6 +136,21 @@ class ChargeEnergyTest(unittest.TestCase):
         self.assertEqual(entries[0]["day_charging_min"], 462)   # 04:55 → 12:37
         self.assertEqual(entries[1]["day_charging_min"], 1)
 
+    def test_overnight_park_split_by_day(self):
+        """Parcată pe 24.11 la 20:00, plecare pe 25.11 la 08:00, 0,6 kWh pierduți."""
+        from datetime import datetime, timezone
+        ts = lambda d, h: datetime(2026, 11, d, h, tzinfo=timezone.utc).timestamp()
+        ins = "INSERT INTO drives (vin, start_ts, end_ts, start_energy, end_energy) VALUES (?,?,?,?,?)"
+        self.con.execute(ins, (VIN, ts(24, 19), ts(24, 20), 52.0, 50.0))
+        self.con.execute(ins, (VIN, ts(25, 8), ts(25, 9), 49.4, 47.0))
+        self.log(ts(24, 18), "OutsideTemp", 6.0)
+        self.log(ts(25, 0), "OutsideTemp", 0.0)   # de la miezul nopții, 0 °C
+        es = analysis.park_entries(self.con, VIN, "2026-11-24", "2026-11-25", timezone.utc)
+        park = [e for e in es if e["start_ts"] == ts(24, 20)]
+        self.assertEqual([(e["day"], e["part_hours"], e["part_kwh"], e["temp"]) for e in park],
+                         [("2026-11-25", 8.0, 0.4, 0.0), ("2026-11-24", 4.0, 0.2, 6.0)])
+        self.assertEqual([e["next_day"] for e in park], [None, "2026-11-25"])
+
     def test_unchanged_counter_falls_back_to_battery_energy(self):
         t = self.t0
         self.event(t, "DetailedChargeStateCharging")

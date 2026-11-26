@@ -554,6 +554,57 @@ def parks(con, vin, t0, t1):
     return list(reversed(out))
 
 
+def time_avg(con, vin, field, a, b):
+    """Media în timp a unui semnal pe [a, b]. Mașina trimite valoarea doar când se schimbă, deci
+    fiecare valoare contează cât a stat valabilă, nu o dată pe mesaj."""
+    cur = value_at(con, vin, field, a)
+    pts = series(con, vin, field, a, b)
+    if cur is None:
+        if not pts:
+            return None
+        cur = pts[0][1]
+    total, t = 0.0, a
+    for ts, v in pts:
+        total += cur * (ts - t)
+        t, cur = ts, v
+    total += cur * (b - t)
+    return total / (b - a) if b > a else cur
+
+
+def park_entries(con, vin, d0: str, d1: str, tz):
+    """Parcările din zilele [d0, d1], câte o intrare pentru fiecare zi: o parcare peste noapte are două.
+    Energia pierdută se împarte proporțional cu orele din fiecare zi; temperatura e media de afară
+    din bucata respectivă. Bucățile sub 10 minute (ex. 23:55 → 00:00) se lipesc de vecina lor."""
+    t0, t1 = day_bounds(d0, d1, tz)
+    out = []
+    for p in parks(con, vin, t0, t1):
+        a, b = p["start_ts"], p["end_ts"] or time.time()
+        parts, day = [], datetime.fromtimestamp(a, tz).date()
+        while True:
+            ds, de = day_bounds(day.isoformat(), day.isoformat(), tz)
+            if min(b, de) > max(a, ds):
+                parts.append([day.isoformat(), max(a, ds), min(b, de)])
+            if de >= b:
+                break
+            day += timedelta(days=1)
+        if len(parts) > 1 and parts[0][2] - parts[0][1] < 600:
+            parts[1][1] = parts.pop(0)[1]
+        if len(parts) > 1 and parts[-1][2] - parts[-1][1] < 600:
+            parts[-2][2] = parts.pop()[2]
+        total = max(b - a, 1)
+        for i, (k, pa, pb) in enumerate(parts):
+            if not d0 <= k <= d1:
+                continue
+            temp = time_avg(con, vin, "OutsideTemp", pa, pb)
+            out.append(dict(
+                p, day=k, at=pa, part_hours=round((pb - pa) / 3600, 2),
+                part_kwh=round(p["kwh_lost"] * (pb - pa) / total, 2) if p["kwh_lost"] is not None else None,
+                temp=round(temp, 1) if temp is not None else None,
+                start_day=parts[0][0], next_day=parts[i + 1][0] if i + 1 < len(parts) else None, parts=len(parts)))
+    out.sort(key=lambda e: e["at"], reverse=True)
+    return out
+
+
 def day_bounds(day_from: str, day_to: str, tz):
     d0 = datetime.fromisoformat(day_from).replace(tzinfo=tz)
     d1 = datetime.fromisoformat(day_to).replace(tzinfo=tz) + timedelta(days=1)

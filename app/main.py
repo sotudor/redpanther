@@ -935,9 +935,8 @@ async def api_charge_cost(charge_id: int, request: Request):
 @app.get("/api/parks/{vin}")
 async def api_parks(vin: str, frm: str = "", to: str = ""):
     d0, d1 = _range(frm, to)
-    t0, t1 = analysis.day_bounds(d0, d1, TZ)
     with db() as con:
-        return {"from": d0, "to": d1, "parks": analysis.parks(con, vin, t0, t1)}
+        return {"from": d0, "to": d1, "entries": analysis.park_entries(con, vin, d0, d1, TZ)}
 
 
 @app.get("/api/stats/{vin}")

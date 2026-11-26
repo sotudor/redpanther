@@ -186,6 +186,7 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
 .item .ic.dc2 { background: color-mix(in srgb, var(--dc) 16%, transparent); color: var(--dc); }
 .item .ic.cal { background: var(--charge-soft); color: var(--charge); font-weight: 700; font-size: .95rem; }
 .item .ic.cal.drive { background: rgba(47,111,235,.12); color: var(--blue); }
+.item .ic.cal.park { background: rgba(124,92,224,.13); color: var(--violet); }
 .item.empty-day { opacity: .55; }
 /* alegerea intervalului la graficele din Car (2 h / 6 h / 12 h ...) */
 .seg { display: inline-flex; gap: 2px; background: var(--surface-2); border-radius: 999px; padding: 2px; }
@@ -487,12 +488,17 @@ h1.title { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin:
   <!-- PARKED -->
   <section class="view" id="view-parked">
     <h1 class="title">Parcări</h1>
-    <div data-period></div>
-    <div class="grid" style="margin-top:.75rem">
-      <div class="card"><div class="k">Pierdut în parcare</div><div class="v"><span id="pTotal">–</span><small>kWh</small></div></div>
-      <div class="card"><div class="k">În medie pe zi</div><div class="v"><span id="pPerDay">–</span><small>kWh</small></div></div>
-    </div>
+    <div id="pkPeriod"></div>
+    <div class="sum-strip" id="pkSum"></div>
     <div class="list" id="parkList" style="margin-top:.5rem"></div>
+    <!-- Energia și temperatura au scări diferite, deci două grafice aliniate pe aceleași zile, nu unul cu două axe. -->
+    <div class="card chart-card" id="pkChartCard" hidden>
+      <div class="card-head"><h3 id="pkChartTitle"></h3><span class="k" id="pkChartTotal"></span></div>
+      <div class="chart" id="pkChart"></div>
+      <div class="card-head" style="margin-top:1rem"><h3 id="pkTempTitle"></h3><span class="k" id="pkTempNote"></span></div>
+      <div class="chart sm" id="pkTemp"></div>
+      <div class="chart-foot"><span id="pkChartNote"></span></div>
+    </div>
   </section>
 
   <!-- STATS -->
@@ -1317,15 +1323,111 @@ async function loadCharge(id) {
 }
 
 /* ---------- PARKED ---------- */
+const PP = makePeriod("pkPeriod", () => loadParks());
+// O intrare = partea dintr-o zi a unei parcări (o parcare peste noapte are două intrări).
+const pkKwh = (e) => e.part_kwh || 0;
+const pkHours = (list) => list.reduce((a, e) => a + (e.part_hours || 0), 0);
+const pkSum = (list) => list.reduce((a, e) => a + pkKwh(e), 0);
+/* Temperatura medie a unui grup, ponderată cu orele de parcare. */
+function pkTemp(list) {
+  const ok = list.filter((e) => e.temp !== null && e.part_hours > 0), h = pkHours(ok);
+  return h > 0 ? ok.reduce((a, e) => a + e.temp * e.part_hours, 0) / h : null;
+}
+const hoursText = (h) => h >= 1 ? fmt(h, 1) + " h" : Math.round(h * 60) + " min";
+function parkItem(e) {
+  const flags = [e.ongoing && !e.next_day ? "acum" : "", e.sentry ? "Sentry" : "", e.charged ? "încărcată" : "", e.temp !== null ? fmt(e.temp, 1) + " °C" : ""].filter(Boolean);
+  const note = e.parts > 1 ? [e.day !== e.start_day ? `parcată din ${ddmm(new Date(e.start_ts * 1000))}, ${hm(e.start_ts)}` : "",
+                              e.next_day ? `continuă pe ${ddmm(atNoon(e.next_day))}` : ""].filter(Boolean).join(" · ") : "";
+  return `<div class="item static"><span class="ic park">${ICON.park}</span><span class="main"><div class="t1">${esc(e.place || "Parcată")}</div><div class="t2">${hm(e.at)} · ${hoursText(e.part_hours)}${flags.length ? " · " + flags.join(" · ") : ""}</div>${note ? `<div class="t2">${note}</div>` : ""}</span><span class="side"><b>${fmt(e.part_kwh, 2)} kWh</b><span>${e.kwh_per_day !== null ? fmt(e.kwh_per_day, 2) + " kWh/zi" : ""}</span></span></div>`;
+}
+function parkGroup(attrs, badge, title, list) {
+  const t = pkTemp(list), h = pkHours(list);
+  const sub = list.length ? `${fmt(h, h < 10 ? 1 : 0)} h parcată${t !== null ? ` · ${fmt(t, 1)} °C` : ""}` : "Fără date";
+  return groupItem(attrs, badge, title, sub, list.length ? fmt(pkSum(list), 2) + " kWh" : "–", !list.length, "park");
+}
+
 async function loadParks() {
-  const j = await api(`/api/parks/${encodeURIComponent(current)}${rangeQuery()}`);
-  const box = $("parkList");
-  const total = j.parks.reduce((a, p) => a + (p.kwh_lost || 0), 0);
-  const hours = j.parks.reduce((a, p) => a + p.hours, 0);
-  $("pTotal").textContent = fmt(total, 1);
-  $("pPerDay").textContent = hours >= 1 ? fmt(total / hours * 24, 2) : "–";
-  if (!j.parks.length) { box.innerHTML = '<div class="empty-note">Nicio parcare în perioada aleasă.</div>'; return; }
-  box.innerHTML = j.parks.map((p) => `<div class="item static"><span class="ic park">${ICON.park}</span><span class="main"><div class="t1">${esc(p.place || "Parcată")}</div><div class="t2">${dayName(p.start_ts)}, ${hm(p.start_ts)} · ${p.hours >= 1 ? fmt(p.hours, 1) + " h" : Math.round(p.hours * 60) + " min"}${p.ongoing ? " · acum" : ""}${p.sentry ? " · Sentry" : ""}${p.charged ? " · încărcată" : ""}</div></span><span class="side"><b>${fmt(p.kwh_lost, 2)} kWh</b><span>${p.kwh_per_day !== null ? fmt(p.kwh_per_day, 2) + " kWh/zi" : ""}</span></span></div>`).join("");
+  PP.sync();
+  if (!$("pkPeriod").firstChild) PP.render();
+  const s = PP.s, [f, t] = PP.range();
+  const j = await api(`/api/parks/${encodeURIComponent(current)}?frm=${f}&to=${t}`);
+  const es = j.entries;   // cea mai recentă prima
+  const box = $("parkList"), keyOf = (e) => e.day;
+  const kwh = pkSum(es), hours = pkHours(es), temp = pkTemp(es);
+  $("pkSum").innerHTML = sumStrip([["Pierdut", fmt(kwh, kwh < 10 ? 2 : 1), "kWh"], ["În medie pe zi", hours >= 1 ? fmt(kwh / hours * 24, 2) : "–", "kWh"], ["Temperatură", fmt(temp, 1), "°C"]]);
+  $("pkChartTotal").textContent = kwh ? `Total ${fmt(kwh, 1)} kWh` : "";
+  const card = $("pkChartCard");
+  card.hidden = s.kind === "day";   // la o singură zi graficul nu spune nimic în plus față de listă
+
+  let labels = [], groups = [], opts = { digits: 2, unit: "kWh" };
+  if (s.kind === "day") {
+    box.innerHTML = es.length ? es.map(parkItem).join("") : '<div class="empty-note">Nicio parcare în această zi.</div>';
+  } else if (s.kind === "month" || s.kind === "custom") {
+    const days = daysOf(f, t), by = groupBy(s.kind, f, t, es, keyOf);
+    labels = s.kind === "month" ? days.map((d) => String(atNoon(d).getDate())) : dayLabels(days.map((day) => ({ day })));
+    groups = days.map((d) => by[d]);
+    opts.onPick = (i) => PP.drill("day", atNoon(days[i]));
+    $("pkChartTitle").innerHTML = 'Pierdut în parcare pe zi <span class="k">(kWh)</span>';
+    if (s.kind === "month") {
+      $("pkChartNote").textContent = "Apasă pe o zi pentru detalii";
+      const shown = days.filter((d) => by[d].length).reverse();
+      box.innerHTML = shown.length ? shown.map((d) => parkGroup(`data-day="${d}"`, atNoon(d).getDate(), dayName(atNoon(d).getTime() / 1000), by[d])).join("") : '<div class="empty-note">Nicio parcare în această lună.</div>';
+      box.querySelectorAll("[data-day]").forEach((b) => b.onclick = () => PP.drill("day", atNoon(b.dataset.day)));
+    } else {
+      $("pkChartNote").textContent = rangeNote(f, t);
+      let html = "";
+      for (const d of days.slice().reverse()) if (by[d].length) html += `<div class="day-head">${esc(dayName(atNoon(d).getTime() / 1000))}</div>` + by[d].map(parkItem).join("");
+      box.innerHTML = html || '<div class="empty-note">Nicio parcare în perioada aleasă.</div>';
+    }
+  } else {
+    const y = s.ref.getFullYear(), by = groupBy("year", f, t, es, keyOf);
+    labels = MONTHS.slice();
+    groups = by;
+    opts.every = 1;
+    opts.onPick = (i) => PP.drill("month", new Date(y, i, 1, 12));
+    $("pkChartTitle").innerHTML = 'Pierdut în parcare pe lună <span class="k">(kWh)</span>';
+    $("pkChartNote").textContent = "Apasă pe o lună pentru detalii";
+    const ms = yearMonths(y);
+    box.innerHTML = ms.length ? ms.map((m) => parkGroup(`data-month="${m}"`, MONTHS[m], monthName(y, m), by[m])).join("") : '<div class="empty-note">Niciun an cu date.</div>';
+    box.querySelectorAll("[data-month]").forEach((b) => b.onclick = () => PP.drill("month", new Date(y, Number(b.dataset.month), 1, 12)));
+  }
+  if (card.hidden) return;
+  stackChart($("pkChart"), labels, groups.map((g) => [{ v: pkSum(g), c: "var(--violet)" }]), opts);
+  $("pkTempTitle").innerHTML = `Temperatura medie afară <span class="k">(°C)</span>`;
+  $("pkTempNote").textContent = "cât a stat parcată";
+  slotLine($("pkTemp"), labels, groups.map((g) => g.length ? pkTemp(g) : null), "var(--amber)", "°C", { digits: 1, every: opts.every });
+}
+
+/* Linie pe aceleași coloane ca stackChart (aceeași margine stângă și aceleași sloturi), ca să se alinieze
+   sub graficul cu bare. Zilele fără valoare rup linia. */
+function slotLine(box, labels, values, color, unit, { digits = 0, every = 0 } = {}) {
+  box.replaceChildren();
+  const has = (v) => v !== null && v !== undefined;
+  const vals = values.filter(has);
+  if (!vals.length) { box.innerHTML = '<div class="chart-empty">Fără date de temperatură.</div>'; return; }
+  const W = box.clientWidth || 320, H = box.clientHeight || 120, L = 30, B = 22, T = 10;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}` }, box);
+  let lo = Math.floor(Math.min(...vals)), hi = Math.ceil(Math.max(...vals));
+  if (hi - lo < 4) { const c = (hi + lo) / 2; lo = Math.floor(c - 2); hi = Math.ceil(c + 2); }
+  const Y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  for (let i = 0; i <= 2; i++) {
+    const v = lo + (hi - lo) * i / 2, y = Y(v);
+    el("line", { x1: L, x2: W, y1: y, y2: y, stroke: "var(--line)", "stroke-width": 1 }, svg);
+    el("text", { x: L - 6, y: y + 3, "text-anchor": "end" }, svg).textContent = fmt(v, Number.isInteger(v) ? 0 : 1);
+  }
+  const n = values.length, slot = (W - L) / n, X = (i) => L + slot * i + slot / 2;
+  every = every || Math.ceil(n / 10);
+  const d = values.map((v, i) => has(v) ? `${i && has(values[i - 1]) ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}` : "").join("");
+  el("path", { d, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+  values.forEach((v, i) => {
+    if (has(v)) {
+      el("circle", { cx: X(i), cy: Y(v), r: n > 16 ? 3 : 4, fill: color, stroke: "var(--surface)", "stroke-width": 1.5 }, svg);
+      // țintă de hover mai mare decât punctul
+      const hit = el("rect", { x: L + slot * i, y: T, width: slot, height: H - T - B, fill: "transparent" }, svg);
+      el("title", {}, hit).textContent = `${labels[i]}: ${fmt(v, digits)} ${unit}`;
+    }
+    if (i % every === 0) el("text", { x: X(i), y: H - 6, "text-anchor": "middle" }, svg).textContent = labels[i];
+  });
 }
 
 /* Etichetele zilelor pentru graficele cu bare: ziua săptămânii pentru perioade scurte, altfel data. */
